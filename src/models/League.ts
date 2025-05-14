@@ -1,4 +1,4 @@
-enum Status {
+export enum Status {
   pre_draft = "pre_draft",
   drafting = "drafting",
   in_season = "in_season",

@@ -2,12 +2,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { NFLState, SeasonType } from "./models/NFLState.js";
-import { League, LeagueScoringSettings } from "./models/League.js";
+import { League, LeagueScoringSettings, Status } from "./models/League.js";
 import { User } from "./models/User.js";
 import { Roster } from "./models/Roster.js";
-
-import { promises as fs } from "fs";
-import path from "path";
+import { PlayoffMatchup } from "./models/PlayoffMatchup.js";
 
 const SLEEPER_API_BASE = "https://api.sleeper.app/v1";
 
@@ -18,6 +16,39 @@ const leagueCache = new Map<string, string>();
 // User resource URI
 interface Counter {
   [key: string]: number;
+}
+
+interface Standing {
+  placement: string;
+  rosterId: string;
+}
+
+interface History {
+  year: string;
+  finalStandings: Standing[];
+  leagueId: string;
+  leagueName: string;
+}
+
+interface YearlyPlayoffData {
+  year: string;
+  leagueName: string;
+  placements: Record<string, string[]>;
+  missedPlayoffs: string[];
+}
+
+function normalizeString(str: string): string {
+  return (
+    str
+      .toLowerCase()
+      // Replace curly quotes with straight quotes
+      .replace(/[\u2018\u2019]/g, "'") // Single quotes
+      .replace(/[\u201C\u201D]/g, '"') // Double quotes
+      // Also handle common variations
+      .replace(/'/g, "'") // Right single quotation mark
+      .replace(/"/g, '"') // Various double quotes
+      .trim()
+  );
 }
 
 function getPositionLabel(position: string): string {
@@ -248,8 +279,10 @@ async function fetchLeagueId(
   const leagues = await makeRequest<League[]>(leaguesUrl);
   if (!leagues) return null;
 
+  const normalizedName = normalizeString(leagueName);
+
   const league = leagues.find(
-    (l: League) => l.name.toLowerCase() === leagueName.toLowerCase()
+    (l: League) => normalizeString(l.name) === normalizedName
   );
   if (!league) return null;
 
@@ -623,9 +656,69 @@ mcpServer.tool(
   }
 );
 
+async function fetchLeagueHistory(
+  leagueData: League,
+  history: History[]
+): Promise<boolean> {
+  if (leagueData.status === Status.complete) {
+    const winnersBracketUrl = `${SLEEPER_API_BASE}/league/${leagueData.league_id}/winners_bracket`;
+    const winnersBracket = await makeRequest<PlayoffMatchup[]>(
+      winnersBracketUrl
+    );
+
+    if (!winnersBracket) return false;
+
+    const lastRound = Math.max(
+      ...winnersBracket.map((match: PlayoffMatchup) => match.r)
+    );
+
+    const finalRoundMatches = winnersBracket.filter(
+      (match: PlayoffMatchup) => match.r === lastRound
+    );
+
+    const finalStandings = finalRoundMatches.reduce((standings, match) => {
+      if (match.p) {
+        standings.push(
+          { placement: String(match.p), rosterId: String(match.w) },
+          { placement: String(match.p + 1), rosterId: String(match.l) }
+        );
+      }
+
+      return standings;
+    }, [] as Standing[]);
+
+    const playoffRosterIds = new Set(finalStandings.map((fs) => fs.rosterId));
+
+    for (let id = 1; id <= leagueData.total_rosters; id++) {
+      if (!playoffRosterIds.has(String(id))) {
+        finalStandings.push({
+          placement: "missed_playoffs",
+          rosterId: String(id),
+        });
+      }
+    }
+
+    history.push({
+      year: leagueData.season,
+      leagueId: leagueData.league_id,
+      leagueName: leagueData.name,
+      finalStandings,
+    });
+  }
+
+  if (leagueData.previous_league_id === null) return true;
+
+  const leagueUrl = `${SLEEPER_API_BASE}/league/${leagueData.previous_league_id}`;
+  const prevLeague = await makeRequest<League>(leagueUrl);
+
+  if (!prevLeague) return false;
+
+  return await fetchLeagueHistory(prevLeague, history);
+}
+
 mcpServer.tool(
-  "get-last-league-winner",
-  "Gets the last winner for the league. Please request the user's sleeper username before calling this.",
+  "get-league-playoff-history",
+  "Gets the complete playoff history for the league, including all placements. Please request the user's sleeper username before calling this.",
   {
     username: z.string().describe("Sleeper username."),
     leagueName: z.string().describe("Name of the league"),
@@ -645,81 +738,115 @@ mcpServer.tool(
       };
     }
 
-    const leagueRosters = await fetchLeagueRosters(
-      username,
-      leagueName,
-      leagueData.league_id
-    );
+    const leagueHistory: History[] = [];
+    const success = await fetchLeagueHistory(leagueData, leagueHistory);
 
-    if (!leagueRosters) {
+    if (!success && leagueHistory.length === 0) {
       return {
         content: [
           {
             type: "text",
-            text: "Unable to fetch league rosters.",
+            text: "Could not fetch data for completed leagues. Please try again later.",
           },
         ],
-        isError: true,
       };
     }
 
-    const { latest_league_winner_roster_id } = leagueData.metadata;
+    const playoffHistoryByYear: YearlyPlayoffData[] = [];
 
-    const lastWinningRoster = leagueRosters.find(
-      (roster: Roster) =>
-        roster.roster_id === Number(latest_league_winner_roster_id)
-    );
-
-    if (!lastWinningRoster) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Roster Id mismatch. Unable to find the last winning roster.",
-          },
-        ],
-        isError: true,
+    // Process each year in the history
+    for (const yearData of leagueHistory) {
+      const yearResult: YearlyPlayoffData = {
+        year: yearData.year,
+        leagueName: yearData.leagueName,
+        placements: {},
+        missedPlayoffs: [],
       };
-    }
 
-    const winnerIds = [lastWinningRoster.owner_id];
+      // Fetch rosters for this historical league
+      const historicalRosters = await fetchLeagueRosters(
+        username,
+        yearData.leagueName,
+        yearData.leagueId
+      );
 
-    if (lastWinningRoster.co_owners) {
-      lastWinningRoster.co_owners.forEach((co_owner) => {
-        winnerIds.push(co_owner);
-      });
-    }
-
-    const winners = [];
-
-    for (const winnerId of winnerIds) {
-      const userDetails = await fetchUser(winnerId);
-
-      if (!userDetails) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Unable to fetch details of the winning user.",
-            },
-          ],
-          isError: true,
-        };
+      if (!historicalRosters || yearData.finalStandings.length === 0) {
+        yearResult.placements[1] = ["No playoff data available"];
+        playoffHistoryByYear.push(yearResult);
+        continue;
       }
 
-      winners.push(userDetails.username);
+      // Process each placement
+      for (const standing of yearData.finalStandings) {
+        const roster = historicalRosters.find(
+          (r: Roster) => r.roster_id === Number(standing.rosterId)
+        );
+
+        if (!roster) {
+          yearResult.placements[standing.placement] = ["Roster not found"];
+          continue;
+        }
+
+        // Get all owner IDs and fetch usernames
+        const ownerIds = [roster.owner_id, ...(roster.co_owners || [])];
+        const usernames: string[] = [];
+
+        for (const ownerId of ownerIds) {
+          const userDetails = await fetchUser(ownerId);
+          if (userDetails) {
+            usernames.push(userDetails.username);
+          }
+        }
+
+        if (standing.placement === "missed_playoffs") {
+          yearResult.missedPlayoffs.push(...usernames);
+        } else {
+          yearResult.placements[standing.placement] =
+            usernames.length > 0 ? usernames : ["Unknown user"];
+        }
+      }
+
+      playoffHistoryByYear.push(yearResult);
     }
 
-    const formattedWinnerDetails =
-      winners.length > 1
-        ? `Co-owner Winners: ${winners.join(", ")}`
-        : `Winner: ${winners[0]}`;
+    const formattedHistory = playoffHistoryByYear
+      .sort((a, b) => parseInt(b.year) - parseInt(a.year))
+      .map((yearData) => {
+        const placementText = Object.entries(yearData.placements)
+          .sort(([a], [b]) => Number(a) - Number(b))
+          .map(([placement, owners]) => {
+            const ownerText =
+              owners.length > 1 ? `Co-owners: ${owners.join(", ")}` : owners[0];
+            return `  ${placement}. ${ownerText}`;
+          })
+          .join("\n");
+
+        let yearText = `${yearData.year} - ${yearData.leagueName}:\n${placementText}`;
+
+        if (yearData.missedPlayoffs.length > 0) {
+          yearText += `\n  Missed playoffs: ${yearData.missedPlayoffs.join(
+            ", "
+          )}`;
+        }
+
+        return yearText;
+      })
+      .join("\n\n");
+
+    let responseText = `League Playoff History:\n\n${formattedHistory}`;
+
+    if (!success && leagueHistory.length > 0) {
+      const oldestYear = Math.min(
+        ...leagueHistory.map((h) => parseInt(h.year))
+      );
+      responseText += `\n\nNote: Could only retrieve history back to ${oldestYear}. Earlier league data may be unavailable.`;
+    }
 
     return {
       content: [
         {
           type: "text",
-          text: `Last winning user: ${formattedWinnerDetails}`,
+          text: responseText,
         },
       ],
     };
