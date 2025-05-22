@@ -35,6 +35,17 @@ interface Standing {
   rosterId: string;
 }
 
+interface StarterWithPosition {
+  id: string;
+  points: number;
+  position: string;
+}
+
+export interface MatchupFormatted
+  extends Omit<Matchup, "starters" | "starters_points"> {
+  starters: StarterWithPosition[];
+}
+
 const userCache = new Map<string, string>();
 const leagueCache = new Map<string, string>();
 
@@ -127,6 +138,16 @@ export async function fetchLeagueData(
 
   const leagueUrl = `${SLEEPER_API_BASE}/league/${id}`;
   return await makeRequest<League>(leagueUrl);
+}
+
+export async function fetchLeagueRosterPositions(
+  username?: string,
+  leagueName?: string,
+  leagueId?: string
+): Promise<string[] | null> {
+  const leagueDetails = await fetchLeagueData(username, leagueName, leagueId);
+
+  return leagueDetails ? leagueDetails.roster_positions : null;
 }
 
 export async function fetchLeagues(
@@ -387,18 +408,28 @@ export async function fetchMatchupStarters(
     matchupStatus,
   } = matchupDetails;
 
-  function mapStarters(matchup: Matchup) {
+  const rosterPositions = await fetchLeagueRosterPositions(
+    username,
+    leagueName,
+    leagueId
+  );
+  if (!rosterPositions) return null;
+
+  function mapStarters(matchup: Matchup, rosterPositions: string[]) {
     const starters = matchup.starters || [];
     const starterPoints = matchup.starters_points || [];
+
+    const starterPositions = rosterPositions?.slice(0, starters.length);
 
     return starters.map((playerId, index) => ({
       playerId,
       points: starterPoints[index] || 0,
+      position: starterPositions[index] || "UNKNOWN",
     }));
   }
 
-  const userStarterDetails = mapStarters(userRoster);
-  const opponentStarterDetails = mapStarters(opponentRoster);
+  const userStarterDetails = mapStarters(userRoster, rosterPositions);
+  const opponentStarterDetails = mapStarters(opponentRoster, rosterPositions);
 
   return {
     userTeam: {

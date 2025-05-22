@@ -1,17 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SeasonType } from "./models/NFLState.js";
-import { League, Status } from "./models/League.js";
-import { Roster } from "./models/Roster.js";
-import { PlayoffMatchup } from "./models/PlayoffMatchup.js";
+import { League } from "./models/League.js";
 import {
   fetchLeagues,
-  fetchLeagueData,
   fetchLeagueHistoryMap,
-  fetchLeagueRosters,
-  fetchUser,
-  makeRequest,
-  SLEEPER_API_BASE,
   fetchUserId,
   fetchNFLState,
 } from "./utils/api.js";
@@ -25,8 +18,11 @@ import {
 } from "./utils/schemas.js";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
+  processBenchVsStarterAnalysis,
   processLeagueSettings,
+  processMatchupBench,
   processMatchupDetails,
+  processMatchupStarters,
   Processor,
   processPlayoffHistory,
   processPlayoffSchedule,
@@ -290,6 +286,37 @@ mcpServer.tool(
 );
 
 mcpServer.tool(
+  "get-matchup-starters",
+  "Gets detailed information about the starting players for a matchup",
+  userLeagueRequiredYearWeekShape,
+  async ({ username, leagueName, week, year }) => {
+    const userId = await fetchUserId(username);
+
+    if (!userId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not find user ID for username: ${username}. Ensure the username is valid.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    return await processLeagueDataByYear(
+      username,
+      leagueName,
+      year,
+      processMatchupStarters,
+      `Matchup Starter Details for ${username} in ${leagueName} for Week ${week}`,
+      week,
+      userId
+    );
+  }
+);
+
+mcpServer.tool(
   "get-league-playoff-history",
   "Gets the complete playoff history for the league, including all placements. Please request the user's sleeper username before calling this.",
   userLeagueYearShape,
@@ -300,6 +327,68 @@ mcpServer.tool(
       year,
       processPlayoffHistory,
       "League Playoff History"
+    );
+  }
+);
+
+mcpServer.tool(
+  "get-matchup-bench",
+  "Gets detailed information about bench players for a matchup, showing which players were benched and how many points they scored",
+  userLeagueRequiredYearWeekShape,
+  async ({ username, leagueName, week, year }) => {
+    const userId = await fetchUserId(username);
+
+    if (!userId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not find user ID for username: ${username}. Ensure the username is valid.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    return await processLeagueDataByYear(
+      username,
+      leagueName,
+      year,
+      processMatchupBench,
+      `Matchup Bench Details for ${username} in ${leagueName} for Week ${week}`,
+      week,
+      userId
+    );
+  }
+);
+
+mcpServer.tool(
+  "get-bench-starter-analysis",
+  "Analyzes lineup decisions for a matchup, showing whether optimal choices were made and if bench players outperformed starters. Identifies missed opportunities and potential points left on the bench.",
+  userLeagueRequiredYearWeekShape,
+  async ({ username, leagueName, week, year }) => {
+    const userId = await fetchUserId(username);
+
+    if (!userId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not find user ID for username: ${username}. Ensure the username is valid.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    return await processLeagueDataByYear(
+      username,
+      leagueName,
+      year,
+      processBenchVsStarterAnalysis,
+      `Lineup Analysis for ${username} vs Opponent in Week ${week}`,
+      week,
+      userId
     );
   }
 );

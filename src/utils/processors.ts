@@ -1,6 +1,10 @@
 import {
+  fetchBenchVsStarterAnalysis,
   fetchLeagueData,
   fetchLeaguePlayoffHistory,
+  fetchLeagueRosterPositions,
+  fetchMatchupBench,
+  fetchMatchupStarters,
   fetchMatchupSummary,
 } from "./api.js";
 import {
@@ -217,15 +221,17 @@ export const processRosterSettings: Processor<string> = async (
   currYear: string,
   leagueId: string
 ) => {
-  const leagueData = await fetchLeagueData(username, leagueName, leagueId);
+  const rosterPositions = await fetchLeagueRosterPositions(
+    username,
+    leagueName,
+    leagueId
+  );
 
-  if (!leagueData) {
-    return `Year ${currYear}:\n  Error: Could not fetch data for this year`;
+  if (!rosterPositions) {
+    return `Year ${currYear}:\n  Error: Could not fetch roster positions for this year`;
   }
 
-  const { roster_positions } = leagueData;
-
-  const rosterCounts: Counter = roster_positions.reduce(
+  const rosterCounts: Counter = rosterPositions.reduce(
     (acc: Counter, curr: string) => {
       acc[curr] = (acc[curr] || 0) + 1;
       return acc;
@@ -331,4 +337,229 @@ export const processPlayoffHistory: Processor<string> = async (
   }
 
   return yearText;
+};
+
+export const processMatchupStarters: Processor<string> = async (
+  username: string,
+  leagueName: string,
+  currYear: string,
+  leagueId: string,
+  week: number,
+  userId: string
+) => {
+  const starterData = await fetchMatchupStarters(
+    username,
+    leagueName,
+    leagueId,
+    week,
+    userId,
+    currYear
+  );
+
+  if (!starterData) {
+    return `Year ${currYear}, Week ${week}:\n  Error: Could not fetch starter data for this matchup`;
+  }
+
+  const { userTeam, opponentTeam, matchupStatus } = starterData;
+
+  // Format the output based on matchup status
+  if (matchupStatus === "upcoming") {
+    return `Year ${currYear}, Week ${week}:\n  Status: Upcoming matchup - starter data not yet available`;
+  }
+
+  // Format user starters
+  const userStarters = userTeam.starters
+    .map((starter) => {
+      return `    ${starter.position}: ${
+        starter.playerId
+      } - ${starter.points.toFixed(2)} points`;
+    })
+    .join("\n");
+
+  const opponentStarters = opponentTeam.starters
+    .map((starter) => {
+      return `    ${starter.position}: ${
+        starter.playerId
+      } - ${starter.points.toFixed(2)} points`;
+    })
+    .join("\n");
+
+  // Create the final output
+  const output = [
+    `Year ${currYear}, Week ${week} (${matchupStatus}):`,
+    `  ${userTeam.name}'s Starters:`,
+    userStarters,
+    `  Total: ${userTeam.totalStarterPoints?.toFixed(2)} points`,
+    "",
+    `  ${opponentTeam.name}'s Starters:`,
+    opponentStarters,
+    `  Total: ${opponentTeam.totalStarterPoints?.toFixed(2)} points`,
+  ].join("\n");
+
+  return output;
+};
+
+export const processMatchupBench: Processor<string> = async (
+  username: string,
+  leagueName: string,
+  currYear: string,
+  leagueId: string,
+  week: number,
+  userId: string
+) => {
+  const benchData = await fetchMatchupBench(
+    username,
+    leagueName,
+    leagueId,
+    week,
+    userId,
+    currYear
+  );
+
+  if (!benchData) {
+    return `Year ${currYear}, Week ${week}:\n  Error: Could not fetch bench data for this matchup`;
+  }
+
+  const { userTeam, opponentTeam, matchupStatus } = benchData;
+
+  // Format the output based on matchup status
+  if (matchupStatus === "upcoming") {
+    return `Year ${currYear}, Week ${week}:\n  Status: Upcoming matchup - bench data not yet available`;
+  }
+
+  // Format user bench players
+  const userBenchPlayers = userTeam.benchPlayers
+    .map((player, index) => {
+      return `    Player ${index + 1}: ${
+        player.playerId
+      } - ${player.points.toFixed(2)} points`;
+    })
+    .join("\n");
+
+  // Format opponent bench players
+  const opponentBenchPlayers = opponentTeam.benchPlayers
+    .map((player, index) => {
+      return `    Player ${index + 1}: ${
+        player.playerId
+      } - ${player.points.toFixed(2)} points`;
+    })
+    .join("\n");
+
+  // Create the final output
+  const output = [
+    `Year ${currYear}, Week ${week} (${matchupStatus}):`,
+    `  ${userTeam.name}'s Bench:`,
+    userBenchPlayers.length > 0 ? userBenchPlayers : "    No bench players",
+    `  Total Bench Points: ${userTeam.totalBenchPoints.toFixed(2)}`,
+    "",
+    `  ${opponentTeam.name}'s Bench:`,
+    opponentBenchPlayers.length > 0
+      ? opponentBenchPlayers
+      : "    No bench players",
+    `  Total Bench Points: ${opponentTeam.totalBenchPoints.toFixed(2)}`,
+  ].join("\n");
+
+  return output;
+};
+
+export const processBenchVsStarterAnalysis: Processor<string> = async (
+  username: string,
+  leagueName: string,
+  currYear: string,
+  leagueId: string,
+  week: number,
+  userId: string
+) => {
+  const analysisData = await fetchBenchVsStarterAnalysis(
+    username,
+    leagueName,
+    leagueId,
+    week,
+    userId,
+    currYear
+  );
+
+  if (!analysisData) {
+    return `Year ${currYear}, Week ${week}:\n  Error: Could not fetch lineup analysis data for this matchup`;
+  }
+
+  const { userTeam, opponentTeam, matchupStatus, summary } = analysisData;
+
+  // Format the output based on matchup status
+  if (matchupStatus === "upcoming") {
+    return `Year ${currYear}, Week ${week}:\n  Status: Upcoming matchup - lineup analysis not yet available`;
+  }
+
+  // Helper function to format analysis for a team
+  function formatTeamAnalysis(team: typeof userTeam) {
+    const { name, analysis, hasMissedOpportunities } = team;
+
+    let teamOutput = [`  ${name}'s Lineup Analysis:`];
+
+    if (analysis.optimalChoices) {
+      teamOutput.push("    ✅ Made optimal lineup choices");
+    } else {
+      teamOutput.push("    ❌ Could have made better lineup choices");
+      teamOutput.push(
+        `    Worst Starter: ${
+          analysis.worstStarter.playerId
+        } (${analysis.worstStarter.points.toFixed(2)} pts)`
+      );
+
+      if (analysis.outperformingBench.length > 0) {
+        teamOutput.push("    Better Bench Options:");
+        analysis.outperformingBench.forEach((player) => {
+          const pointDiff = player.points - analysis.worstStarter.points;
+          teamOutput.push(
+            `      ${player.playerId}: ${player.points.toFixed(
+              2
+            )} pts (+${pointDiff.toFixed(2)})`
+          );
+        });
+      }
+
+      teamOutput.push(
+        `    Total Missed Points: ${analysis.missedPoints.toFixed(2)}`
+      );
+    }
+
+    return teamOutput.join("\n");
+  }
+
+  // Format both teams' analyses
+  const userAnalysisOutput = formatTeamAnalysis(userTeam);
+  const opponentAnalysisOutput = formatTeamAnalysis(opponentTeam);
+
+  // Summary section
+  const summaryOutput = [
+    "  Match Summary:",
+    `    ${userTeam.name} optimal choices: ${
+      summary.userMadeOptimalChoices ? "Yes" : "No"
+    }`,
+    `    ${opponentTeam.name} optimal choices: ${
+      summary.opponentMadeOptimalChoices ? "Yes" : "No"
+    }`,
+  ];
+
+  if (summary.couldHaveChangedOutcome) {
+    summaryOutput.push(
+      "    🔄 Better lineup decisions could have changed the outcome!"
+    );
+  } else {
+    summaryOutput.push(
+      "    ✅ Lineup decisions would not have changed the outcome"
+    );
+  }
+
+  // Create the final output
+  const output = [
+    `Year ${currYear}, Week ${week} Lineup Analysis (${matchupStatus}):`,
+    userAnalysisOutput,
+    "",
+    opponentAnalysisOutput,
+    "",
+    summaryOutput.join("\n"),
+  ].join("\n");
+
+  return output;
 };
