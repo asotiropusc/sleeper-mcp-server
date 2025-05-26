@@ -44,6 +44,7 @@ export const userLeagueRequiredYearShape = {
   year: FIELDS.requiredYear,
 };
 
+// TODO: dont make year required bc we need to be able to perform historical fetching across all league years (MAYBE?)
 export const userLeagueRequiredYearWeekShape = {
   ...userLeagueRequiredYearShape,
   week: FIELDS.week,

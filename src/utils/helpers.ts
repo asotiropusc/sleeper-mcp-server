@@ -1,4 +1,19 @@
-import { League, LeagueScoringSettings, Roster } from "../models/index.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+import {
+  League,
+  LeagueScoringSettings,
+  PlayerMap,
+  Roster,
+} from "../models/index.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const DATA_DIR = path.join(__dirname, "../..", "data");
+const PLAYER_DATA_PATH = path.join(DATA_DIR, "player_data.json");
 
 export enum PlayoffRoundType {
   ONE_WEEK_PER_ROUND,
@@ -284,4 +299,13 @@ export function getUserIdsFromRosterId(
   if (!rosterMatch) return [];
 
   return [rosterMatch.owner_id, ...(rosterMatch.co_owners ?? [])];
+}
+
+export function fetchPlayerMap(): PlayerMap | null {
+  if (!fs.existsSync(PLAYER_DATA_PATH)) {
+    return null;
+  }
+
+  const playerData = fs.readFileSync(PLAYER_DATA_PATH, "utf-8");
+  return JSON.parse(playerData);
 }

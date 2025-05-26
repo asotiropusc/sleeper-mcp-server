@@ -371,7 +371,7 @@ export const processMatchupStarters: Processor<string> = async (
   const userStarters = userTeam.starters
     .map((starter) => {
       return `    ${starter.position}: ${
-        starter.playerId
+        starter.name
       } - ${starter.points.toFixed(2)} points`;
     })
     .join("\n");
@@ -379,7 +379,7 @@ export const processMatchupStarters: Processor<string> = async (
   const opponentStarters = opponentTeam.starters
     .map((starter) => {
       return `    ${starter.position}: ${
-        starter.playerId
+        starter.name
       } - ${starter.points.toFixed(2)} points`;
     })
     .join("\n");
@@ -430,18 +430,18 @@ export const processMatchupBench: Processor<string> = async (
   // Format user bench players
   const userBenchPlayers = userTeam.benchPlayers
     .map((player, index) => {
-      return `    Player ${index + 1}: ${
-        player.playerId
-      } - ${player.points.toFixed(2)} points`;
+      return `    Player ${index + 1}: ${player.name} - ${player.points.toFixed(
+        2
+      )} points`;
     })
     .join("\n");
 
   // Format opponent bench players
   const opponentBenchPlayers = opponentTeam.benchPlayers
     .map((player, index) => {
-      return `    Player ${index + 1}: ${
-        player.playerId
-      } - ${player.points.toFixed(2)} points`;
+      return `    Player ${index + 1}: ${player.name} - ${player.points.toFixed(
+        2
+      )} points`;
     })
     .join("\n");
 
@@ -502,7 +502,7 @@ export const processBenchVsStarterAnalysis: Processor<string> = async (
       teamOutput.push("    ❌ Could have made better lineup choices");
       teamOutput.push(
         `    Worst Starter: ${
-          analysis.worstStarter.playerId
+          analysis.worstStarter.name
         } (${analysis.worstStarter.points.toFixed(2)} pts)`
       );
 
@@ -511,7 +511,7 @@ export const processBenchVsStarterAnalysis: Processor<string> = async (
         analysis.outperformingBench.forEach((player) => {
           const pointDiff = player.points - analysis.worstStarter.points;
           teamOutput.push(
-            `      ${player.playerId}: ${player.points.toFixed(
+            `      ${player.name}: ${player.points.toFixed(
               2
             )} pts (+${pointDiff.toFixed(2)})`
           );

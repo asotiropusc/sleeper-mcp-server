@@ -7,8 +7,10 @@ import {
   NFLState,
   SeasonType,
   PlayoffMatchup,
+  PlayerMap,
 } from "../models/index.js";
 import {
+  fetchPlayerMap,
   getUserIdsFromRosterId,
   getUserRosterId,
   normalizeString,
@@ -35,15 +37,22 @@ interface Standing {
   rosterId: string;
 }
 
-interface StarterWithPosition {
-  id: string;
-  points: number;
+interface PlayerDetail {
+  playerId: string;
+  name: string;
   position: string;
+  rosterSlot: string;
+  team: string;
+  points: number;
 }
 
-export interface MatchupFormatted
-  extends Omit<Matchup, "starters" | "starters_points"> {
-  starters: StarterWithPosition[];
+export interface EnhancedMatchup
+  extends Omit<
+    Matchup,
+    "starters" | "starters_points" | "players" | "players_points"
+  > {
+  starters: PlayerDetail[];
+  bench: PlayerDetail[];
 }
 
 const userCache = new Map<string, string>();
@@ -238,8 +247,8 @@ export async function fetchMatchup(
   userId: string,
   matchupYear: string
 ): Promise<{
-  userRoster: Matchup;
-  opponentRoster: Matchup;
+  userRoster: EnhancedMatchup;
+  opponentRoster: EnhancedMatchup;
   userOwners: string;
   opponentOwners: string;
   matchupStatus: "completed" | "in_progress" | "upcoming";
@@ -316,9 +325,92 @@ export async function fetchMatchup(
     }
   }
 
+  const rosterPositions = await fetchLeagueRosterPositions(
+    username,
+    leagueName,
+    leagueId
+  );
+  if (!rosterPositions) return null;
+
+  const playerData = fetchPlayerMap();
+  if (!playerData) return null;
+
+  function mapStarters(
+    matchup: Matchup,
+    rosterPositions: string[],
+    playerData: PlayerMap
+  ) {
+    const starters = matchup.starters || [];
+    const starterPoints = matchup.starters_points || [];
+
+    const starterPositions = rosterPositions?.slice(0, starters.length);
+
+    return starters.map((playerId, index) => {
+      const playerDetail = playerData[playerId];
+      const position =
+        playerDetail.fantasy_positions.length === 1
+          ? playerDetail.fantasy_positions[0]
+          : playerDetail.fantasy_positions.join(", ");
+
+      return {
+        playerId,
+        name: playerDetail.full_name,
+        position,
+        rosterSlot: starterPositions[index] || "UNKNOWN",
+        team: playerDetail.team || "UNKNOWN",
+        points: starterPoints[index] || 0,
+      };
+    });
+  }
+
+  function mapBenchPlayers(matchup: Matchup, playerData: PlayerMap) {
+    const allPlayers = matchup.players || [];
+    const starters = matchup.starters || [];
+    const playersPoints = matchup.players_points || {};
+
+    const benchPlayerIds = allPlayers.filter(
+      (playerId) => !starters.includes(playerId)
+    );
+
+    return benchPlayerIds.map((playerId) => {
+      const playerDetail = playerData[playerId];
+      const position =
+        playerDetail.fantasy_positions.length === 1
+          ? playerDetail.fantasy_positions[0]
+          : playerDetail.fantasy_positions.join(", ");
+
+      return {
+        playerId,
+        name: playerDetail.full_name,
+        position,
+        rosterSlot: "BN",
+        team: playerDetail.team || "UNKNOWN",
+        points: playersPoints[playerId] || 0,
+      };
+    });
+  }
+
+  const userEnhancedMatchup: EnhancedMatchup = {
+    roster_id: userRoster.roster_id,
+    matchup_id: userRoster.matchup_id,
+    points: userRoster.points,
+    custom_points: userRoster.custom_points,
+    starters: mapStarters(userRoster, rosterPositions, playerData),
+    bench: mapBenchPlayers(userRoster, playerData),
+  };
+
+  const opponentEnhancedMatchup: EnhancedMatchup = {
+    roster_id: opponentRoster.roster_id,
+    matchup_id: opponentRoster.matchup_id,
+    points: opponentRoster.points,
+    custom_points: opponentRoster.custom_points,
+    starters: mapStarters(opponentRoster, rosterPositions, playerData),
+    bench: mapBenchPlayers(opponentRoster, playerData),
+  };
+
   return {
-    userRoster,
-    opponentRoster,
+    userRoster: userEnhancedMatchup,
+    opponentRoster: opponentEnhancedMatchup,
     userOwners,
     opponentOwners,
     matchupStatus,
@@ -408,38 +500,15 @@ export async function fetchMatchupStarters(
     matchupStatus,
   } = matchupDetails;
 
-  const rosterPositions = await fetchLeagueRosterPositions(
-    username,
-    leagueName,
-    leagueId
-  );
-  if (!rosterPositions) return null;
-
-  function mapStarters(matchup: Matchup, rosterPositions: string[]) {
-    const starters = matchup.starters || [];
-    const starterPoints = matchup.starters_points || [];
-
-    const starterPositions = rosterPositions?.slice(0, starters.length);
-
-    return starters.map((playerId, index) => ({
-      playerId,
-      points: starterPoints[index] || 0,
-      position: starterPositions[index] || "UNKNOWN",
-    }));
-  }
-
-  const userStarterDetails = mapStarters(userRoster, rosterPositions);
-  const opponentStarterDetails = mapStarters(opponentRoster, rosterPositions);
-
   return {
     userTeam: {
       name: userOwners,
-      starters: userStarterDetails,
+      starters: matchupDetails.userRoster.starters,
       totalStarterPoints: userRoster.points,
     },
     opponentTeam: {
       name: opponentOwners,
-      starters: opponentStarterDetails,
+      starters: matchupDetails.opponentRoster.starters,
       totalStarterPoints: opponentRoster.points,
     },
     week,
@@ -473,30 +542,12 @@ export async function fetchMatchupBench(
     matchupStatus,
   } = matchupDetails;
 
-  function mapBenchPlayers(matchup: Matchup) {
-    const allPlayers = matchup.players || [];
-    const starters = matchup.starters || [];
-    const playersPoints = matchup.players_points || {};
-
-    const benchPlayerIds = allPlayers.filter(
-      (playerId) => !starters.includes(playerId)
-    );
-
-    return benchPlayerIds.map((playerId) => ({
-      playerId,
-      points: playersPoints[playerId] || 0,
-    }));
-  }
-
-  const userBenchDetails = mapBenchPlayers(userRoster);
-  const opponentBenchDetails = mapBenchPlayers(opponentRoster);
-
-  const userBenchPoints = userBenchDetails.reduce(
+  const userBenchPoints = userRoster.bench.reduce(
     (total, player) => total + player.points,
     0
   );
 
-  const opponentBenchPoints = opponentBenchDetails.reduce(
+  const opponentBenchPoints = opponentRoster.bench.reduce(
     (total, player) => total + player.points,
     0
   );
@@ -504,12 +555,12 @@ export async function fetchMatchupBench(
   return {
     userTeam: {
       name: userOwners,
-      benchPlayers: userBenchDetails,
+      benchPlayers: userRoster.bench,
       totalBenchPoints: userBenchPoints,
     },
     opponentTeam: {
       name: opponentOwners,
-      benchPlayers: opponentBenchDetails,
+      benchPlayers: opponentRoster.bench,
       totalBenchPoints: opponentBenchPoints,
     },
     week,
@@ -543,37 +594,19 @@ export async function fetchBenchVsStarterAnalysis(
     matchupStatus,
   } = matchupDetails;
 
-  function analyzeLineup(matchup: Matchup) {
-    const allPlayers = matchup.players || [];
-    const starters = matchup.starters || [];
-    const playersPoints = matchup.players_points || {};
-
-    // Map starters with their points
-    const starterDetails = starters.map((playerId) => ({
-      playerId,
-      points: playersPoints[playerId] || 0,
-    }));
+  function analyzeLineup(matchup: EnhancedMatchup) {
+    const starters = matchup.starters;
+    const bench = matchup.bench;
 
     // Sort starters by points (lowest first)
-    starterDetails.sort((a, b) => a.points - b.points);
-
-    // Get bench players
-    const benchPlayerIds = allPlayers.filter(
-      (playerId) => !starters.includes(playerId)
-    );
-
-    // Map bench players with their points
-    const benchDetails = benchPlayerIds.map((playerId) => ({
-      playerId,
-      points: playersPoints[playerId] || 0,
-    }));
+    starters.sort((a, b) => a.points - b.points);
 
     // Sort bench by points (highest first)
-    benchDetails.sort((a, b) => b.points - a.points);
+    bench.sort((a, b) => b.points - a.points);
 
     // Find bench players outperforming starters
-    const worstStarter = starterDetails[0];
-    const outperformingBench = benchDetails.filter(
+    const worstStarter = starters[0];
+    const outperformingBench = bench.filter(
       (bench) => bench.points > worstStarter.points
     );
 
@@ -585,8 +618,8 @@ export async function fetchBenchVsStarterAnalysis(
     }, 0);
 
     return {
-      starters: starterDetails,
-      bench: benchDetails,
+      starters: starters,
+      bench: bench,
       worstStarter,
       outperformingBench,
       missedPoints,
@@ -745,6 +778,11 @@ export async function fetchLeaguePlayoffHistory(
   }
 
   return yearResult;
+}
+
+export async function fetchPlayerData(): Promise<PlayerMap | null> {
+  const playerDataUrl = `${SLEEPER_API_BASE}/players/nfl`;
+  return await makeRequest<PlayerMap>(playerDataUrl);
 }
 
 // TODO: fetchMatchupHistory

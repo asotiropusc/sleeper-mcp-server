@@ -7,6 +7,7 @@ import {
   fetchLeagueHistoryMap,
   fetchUserId,
   fetchNFLState,
+  fetchPlayerData,
 } from "./utils/api.js";
 import { parseYearParameter } from "./utils/helpers.js";
 import {
@@ -29,6 +30,15 @@ import {
   processRosterSettings,
   processScoringSettings,
 } from "./utils/processors.js";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const DATA_DIR = path.join(__dirname, "..", "data");
+const PLAYER_DATA_PATH = path.join(DATA_DIR, "player_data.json");
 
 const mcpServer = new McpServer({
   name: "sleeper",
@@ -394,6 +404,18 @@ mcpServer.tool(
 );
 
 async function main() {
+  if (!fs.existsSync(PLAYER_DATA_PATH)) {
+    const playerData = await fetchPlayerData();
+    if (playerData) {
+      fs.writeFileSync(PLAYER_DATA_PATH, JSON.stringify(playerData, null, 2));
+      console.error(`Finished writing to ${PLAYER_DATA_PATH}`);
+    } else {
+      console.error(
+        "Failed to fetch player data. Player specific details won't be available"
+      );
+    }
+  }
+
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
   console.error("Sleeper Fantasy Football MCP Server running on stdio");

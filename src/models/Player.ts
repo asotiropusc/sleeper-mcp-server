@@ -170,6 +170,6 @@ export interface Player {
 /**
  * Type for the player entry, where keys are player IDs and values are Player objects
  */
-export type PlayerEntry = {
+export type PlayerMap = {
   [playerId: string]: Player;
 };

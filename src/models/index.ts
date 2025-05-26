@@ -5,6 +5,5 @@ export * from "./Player.js";
 export * from "./PlayerTrend.js";
 export * from "./PlayoffMatchup.js";
 export * from "./Roster.js";
-export * from "./TradedPick.js";
 export * from "./Transaction.js";
 export * from "./User.js";
