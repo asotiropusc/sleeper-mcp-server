@@ -8,7 +8,12 @@ export const DESCRIPTIONS = {
   year: "Specify years as: '2022' (single year), '2022-2024' (year range), or '2022,2023,2024' (comma-separated list). Using these formats enables more efficient batch processing compared to making multiple separate requests. If omitted, defaults to all available years.",
   requiredYear:
     "Specify years as: '2022' (single year), '2022-2024' (year range), or '2022,2023,2024' (comma-separated list) for efficient batch processing. Defaults to current year.",
-  scoreCategory: "Which scoring category to retrieve.",
+  scoreCategory:
+    "Which scoring category to retrieve. ('offensive', 'defensive', 'kicking', 'all')",
+  opponentUsername:
+    "The Sleeper username of the opponent to compare against in head-to-head analysis. Must be provided by the user.",
+  trendingType:
+    "The types of trending players the user wants details for ('drop', 'add', 'all'). Defaults to 'all' if no argument is provided.",
 };
 
 export const FIELDS = {
@@ -29,6 +34,11 @@ export const FIELDS = {
     .enum(["offensive", "defensive", "kicking", "all"])
     .describe(DESCRIPTIONS.scoreCategory)
     .default("all"),
+  opponentUsername: z.string().describe(DESCRIPTIONS.opponentUsername),
+  trendingType: z
+    .enum(["add", "drop", "all"])
+    .default("all")
+    .describe(DESCRIPTIONS.trendingType),
 };
 
 // Different combinations for different needs
@@ -50,6 +60,11 @@ export const userLeagueRequiredYearWeekShape = {
   week: FIELDS.week,
 };
 
+export const userLeagueYearOpponentShape = {
+  ...userLeagueYearShape,
+  opponentUsername: FIELDS.opponentUsername,
+};
+
 export const userRequiredYearShape = {
   username: FIELDS.username,
   year: FIELDS.requiredYear,
@@ -67,4 +82,13 @@ export const userLeagueShape = {
 
 export const userOnlyShape = {
   username: FIELDS.username,
+};
+
+export const trendingShape = {
+  trendingType: FIELDS.trendingType,
+};
+
+export const userLeagueTrendShape = {
+  ...userLeagueShape,
+  ...trendingShape,
 };

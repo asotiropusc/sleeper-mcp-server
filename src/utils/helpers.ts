@@ -5,9 +5,17 @@ import { fileURLToPath } from "url";
 import {
   League,
   LeagueScoringSettings,
+  Matchup,
   PlayerMap,
+  PlayoffMatchup,
   Roster,
 } from "../models/index.js";
+import {
+  EnhancedMatchup,
+  EnhancedRoster,
+  MatchupPlayerDetail,
+  PlayerDetail,
+} from "./api.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -291,16 +299,6 @@ export function getUserRosterId(
   return rosterMatch ? rosterMatch.roster_id : null;
 }
 
-export function getUserIdsFromRosterId(
-  rosterId: number,
-  rosters: Roster[]
-): string[] {
-  const rosterMatch = rosters.find((roster) => roster.roster_id === rosterId);
-  if (!rosterMatch) return [];
-
-  return [rosterMatch.owner_id, ...(rosterMatch.co_owners ?? [])];
-}
-
 export function fetchPlayerMap(): PlayerMap | null {
   if (!fs.existsSync(PLAYER_DATA_PATH)) {
     return null;
@@ -308,4 +306,256 @@ export function fetchPlayerMap(): PlayerMap | null {
 
   const playerData = fs.readFileSync(PLAYER_DATA_PATH, "utf-8");
   return JSON.parse(playerData);
+}
+
+export function mapPlayerDetails(
+  playerId: string,
+  playerMap: PlayerMap,
+  matchupContext?: {
+    points?: number;
+    rosterSlot?: string;
+  }
+): PlayerDetail {
+  if (playerId === "0") {
+    const slotName = matchupContext?.rosterSlot || "UNKNOWN";
+    const emptySlot = {
+      playerId,
+      name: `[No Player Started]`,
+      team: "N/A",
+      position: slotName,
+    };
+
+    if (matchupContext) {
+      return {
+        ...emptySlot,
+        points: 0,
+        rosterSlot: slotName,
+      };
+    }
+
+    return emptySlot;
+  }
+  const playerDetail = playerMap[playerId];
+
+  if (!playerDetail) {
+    const fallback = {
+      playerId,
+      name: `Unknown Player (${playerId})`,
+      team: "UNKNOWN",
+      position: "UNKNOWN",
+    };
+
+    if (matchupContext) {
+      return {
+        ...fallback,
+        points: matchupContext.points || 0,
+        rosterSlot: matchupContext.rosterSlot || "UNKNOWN",
+      };
+    }
+
+    return fallback;
+  }
+
+  const fantasy_positions = playerDetail.fantasy_positions || [];
+  const position =
+    fantasy_positions.length === 1
+      ? fantasy_positions[0]
+      : fantasy_positions.join(", ") || "UNKNOWN";
+
+  const base = {
+    playerId,
+    name: `${playerDetail.first_name || "Unknown"} ${
+      playerDetail.last_name || "Player"
+    }`,
+    team: playerDetail.team || "UNKNOWN",
+    position,
+  };
+
+  if (matchupContext) {
+    return {
+      ...base,
+      points: matchupContext.points || 0,
+      rosterSlot: matchupContext.rosterSlot || "UNKNOWN",
+    };
+  }
+
+  return base;
+}
+
+export function enhanceRosterWithPlayerDetails(
+  roster: Roster,
+  playerMap: PlayerMap
+) {
+  const benchPlayers =
+    roster.players?.filter(
+      (playerId) => !roster.starters?.includes(playerId)
+    ) || [];
+
+  const rosterArrays = {
+    starters: roster.starters || [],
+    bench: benchPlayers,
+    taxi: roster.taxi || [],
+    reserve: roster.reserve || [],
+  };
+
+  return Object.fromEntries(
+    Object.entries(rosterArrays).map(([key, playerIds]) => [
+      key,
+      playerIds.map((id) => mapPlayerDetails(id, playerMap)),
+    ])
+  ) as {
+    starters: PlayerDetail[];
+    bench: PlayerDetail[];
+    taxi: PlayerDetail[];
+    reserve: PlayerDetail[];
+  };
+}
+
+export function enhanceMatchupWithPlayerDetails(
+  matchup: Matchup,
+  playerData: PlayerMap,
+  rosterPositions: string[]
+): EnhancedMatchup {
+  const starters = matchup.starters || [];
+  const starterPoints = matchup.starters_points || [];
+  const playersPoints = matchup.players_points || {};
+  const starterPositions = rosterPositions?.slice(0, starters.length);
+
+  // Map starters with matchup context
+  const enhancedStarters = starters.map((playerId, index) =>
+    mapPlayerDetails(playerId, playerData, {
+      rosterSlot: starterPositions[index] || "UNKNOWN",
+      points: starterPoints[index] || 0,
+    })
+  ) as MatchupPlayerDetail[];
+
+  // Map bench players
+  const allPlayers = matchup.players || [];
+  const benchPlayerIds = allPlayers.filter((id) => !starters.includes(id));
+
+  const enhancedBench = benchPlayerIds.map((playerId) =>
+    mapPlayerDetails(playerId, playerData, {
+      rosterSlot: "BN",
+      points: playersPoints[playerId] || 0,
+    })
+  ) as MatchupPlayerDetail[];
+
+  return {
+    roster_id: matchup.roster_id,
+    matchup_id: matchup.matchup_id,
+    points: matchup.points,
+    custom_points: matchup.custom_points,
+    starters: enhancedStarters,
+    bench: enhancedBench,
+  };
+}
+
+export function buildBracket(
+  bracketData: PlayoffMatchup[],
+  rosters: EnhancedRoster[],
+  playoffStatus: "completed" | "in_progress" | "not_started"
+) {
+  const rosterMap = new Map();
+  rosters.forEach((roster) => {
+    rosterMap.set(roster.roster_id, {
+      rosterId: roster.roster_id,
+      ownerNames: roster.ownerNames,
+      ownerIds: roster.ownerIds,
+    });
+  });
+
+  const championshipPathData = bracketData.filter(
+    (matchup) =>
+      matchup.r === 1 ||
+      matchup.p === 1 ||
+      (!matchup.p && (matchup?.t1_from?.w || matchup?.t2_from?.w))
+  );
+
+  const bracketByRound = championshipPathData.reduce((acc, matchup) => {
+    if (!acc[matchup.r]) acc[matchup.r] = [];
+
+    acc[matchup.r].push({
+      round: matchup.r,
+      matchupId: matchup.m,
+      team1: rosterMap.get(matchup.t1),
+      team2: rosterMap.get(matchup.t2),
+      winner: matchup.w ? rosterMap.get(matchup.w) : null,
+      loser: matchup.l ? rosterMap.get(matchup.l) : null,
+      isCompleted: !!matchup.w,
+      team1From: matchup.t1_from,
+      team2From: matchup.t2_from,
+    });
+
+    return acc;
+  }, {} as Record<number, any[]>);
+
+  const totalRounds = Object.keys(bracketByRound).length;
+
+  return {
+    bracketByRound,
+    totalRounds,
+    playoffStatus,
+  };
+}
+
+export function getRoundName(roundNumber: number, totalRounds: number): string {
+  if (totalRounds === 1) return "Championship";
+  if (totalRounds === 2) {
+    return roundNumber === 1 ? "Semifinals" : "Championship";
+  }
+  if (totalRounds === 3) {
+    switch (roundNumber) {
+      case 1:
+        return "Quarterfinals";
+      case 2:
+        return "Semifinals";
+      case 3:
+        return "Championship";
+      default:
+        return `Round ${roundNumber}`;
+    }
+  }
+  return `Round ${roundNumber}`;
+}
+
+export function formatMatchup(matchup: any): string {
+  function getTeamName(team: any): string {
+    return team ? team.ownerNames.join(" & ") : "TBD";
+  }
+
+  function getAdvancementInfo(fromInfo: any): string | null {
+    if (!fromInfo) return null;
+
+    if (fromInfo.w) {
+      return `Winner of Game ${fromInfo.w}`;
+    }
+    if (fromInfo.l) {
+      return `Loser of Game ${fromInfo.l}`;
+    }
+
+    return null;
+  }
+
+  const team1Name = getTeamName(matchup.team1);
+  const team2Name = getTeamName(matchup.team2);
+
+  let line = `${team1Name} vs ${team2Name}`;
+
+  if (matchup.isCompleted && matchup.winner) {
+    const winnerName = matchup.winner.ownerNames.join(" & ");
+    line += ` → ${winnerName} wins`;
+  } else if (!matchup.team1 || !matchup.team2) {
+    // Handle TBD teams with advancement info
+    const team1Info = getAdvancementInfo(matchup.team1From);
+    const team2Info = getAdvancementInfo(matchup.team2From);
+
+    if (team1Info || team2Info) {
+      line = `${team1Info || team1Name} vs ${team2Info || team2Name}`;
+    }
+    line += " → Pending";
+  } else {
+    line += " → In progress";
+  }
+
+  return line;
 }

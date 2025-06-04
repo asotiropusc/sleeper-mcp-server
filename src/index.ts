@@ -8,12 +8,17 @@ import {
   fetchUserId,
   fetchNFLState,
   fetchPlayerData,
+  fetchTrendingPlayers,
+  fetchMyTrendingRosterPlayers,
 } from "./utils/api.js";
 import { parseYearParameter } from "./utils/helpers.js";
 import {
   FIELDS,
+  trendingShape,
   userLeagueRequiredYearShape,
   userLeagueRequiredYearWeekShape,
+  userLeagueTrendShape,
+  userLeagueYearOpponentShape,
   userLeagueYearShape,
   userOnlyShape,
 } from "./utils/schemas.js";
@@ -25,10 +30,12 @@ import {
   processMatchupDetails,
   processMatchupStarters,
   Processor,
+  processPlayoffBracket,
   processPlayoffHistory,
   processPlayoffSchedule,
   processRosterSettings,
   processScoringSettings,
+  processSeasonMatchupsBetweenUsers,
 } from "./utils/processors.js";
 import fs from "fs";
 import path from "path";
@@ -57,6 +64,19 @@ async function processLeagueDataByYear<T>(
   title: string,
   ...processorArgs: any[]
 ): Promise<CallToolResult> {
+  const userId = await fetchUserId(username);
+  if (!userId) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Invalid username: ${username}. Prompt user for their username again emphasize that case sensitivity matters.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
   const leagueHistoryMap = await fetchLeagueHistoryMap(username, leagueName);
 
   if (!leagueHistoryMap) {
@@ -96,11 +116,12 @@ async function processLeagueDataByYear<T>(
   const resultsByYear: T[] = [];
 
   for (const currYear of yearsToProcess) {
+    const leagueId = leagueHistoryMap[currYear].leagueId;
+
     const result = await processor(
-      username,
-      leagueName,
+      userId,
+      leagueId,
       currYear,
-      leagueHistoryMap[currYear].leagueId,
       ...processorArgs
     );
 
@@ -163,6 +184,163 @@ mcpServer.tool(
         {
           type: "text",
           text: String(currentWeek),
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "get-trending-players",
+  "Gets the current top 5 trending players based on waiver adds, drops, or both",
+  trendingShape,
+  async ({ trendingType }) => {
+    const trendingPlayers = await fetchTrendingPlayers(trendingType);
+
+    if (!trendingPlayers) {
+      const trendLabel =
+        trendingType === "add"
+          ? "Most Added"
+          : trendingType === "drop"
+          ? "Most Dropped"
+          : "Trending";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Unable to fetch ${trendLabel} players at this time.`,
+          },
+        ],
+      };
+    }
+
+    if (trendingType === "all") {
+      // Separate and limit to top 5 of each
+      const addPlayers = trendingPlayers
+        .filter((p) => p.trendType === "add")
+        .slice(0, 5);
+      const dropPlayers = trendingPlayers
+        .filter((p) => p.trendType === "drop")
+        .slice(0, 5);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `## Most Added Players\n\n${addPlayers
+              .map(
+                (player, index) =>
+                  `${index + 1}. **${player.name}** (${player.team}) - ${
+                    player.playerTrend
+                  }`
+              )
+              .join("\n")}\n\n## Most Dropped Players\n\n${dropPlayers
+              .map(
+                (player, index) =>
+                  `${index + 1}. **${player.name}** (${player.team}) - ${
+                    player.playerTrend
+                  }`
+              )
+              .join("\n")}`,
+          },
+        ],
+      };
+    }
+
+    // Single category (add or drop)
+    const trendLabel = trendingType === "add" ? "Most Added" : "Most Dropped";
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `## ${trendLabel} Players\n\n${trendingPlayers
+            .slice(0, 5)
+            .map(
+              (player, index) =>
+                `${index + 1}. **${player.name}** (${player.team}) - ${
+                  player.playerTrend
+                }`
+            )
+            .join("\n")}`,
+        },
+      ],
+    };
+  }
+);
+
+mcpServer.tool(
+  "get-user-roster-trending-players",
+  "Gets the players on the user's roster that are currently trending",
+  userLeagueTrendShape,
+  async ({ username, leagueName, trendingType }) => {
+    const myTrendingPlayers = await fetchMyTrendingRosterPlayers(
+      username,
+      leagueName,
+      trendingType
+    );
+
+    if (!myTrendingPlayers || myTrendingPlayers.length === 0) {
+      const trendLabel =
+        trendingType === "add"
+          ? "uptrending"
+          : trendingType === "drop"
+          ? "downtrending"
+          : "trending";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `You don't have any ${trendLabel} players on your roster right now.`,
+          },
+        ],
+      };
+    }
+
+    if (trendingType === "all") {
+      const addPlayers = myTrendingPlayers.filter((p) => p.trendType === "add");
+      const dropPlayers = myTrendingPlayers.filter(
+        (p) => p.trendType === "drop"
+      );
+
+      let output = "";
+
+      if (addPlayers.length > 0) {
+        output += `## Your Uptrending Players\n\n${addPlayers
+          .map(
+            (player) =>
+              `• **${player.name}** (${player.team}) - ${player.playerTrend}`
+          )
+          .join("\n")}`;
+      }
+
+      if (dropPlayers.length > 0) {
+        if (output) output += "\n\n";
+        output += `## Your Downtrending Players\n\n${dropPlayers
+          .map(
+            (player) =>
+              `• **${player.name}** (${player.team}) - ${player.playerTrend}`
+          )
+          .join("\n")}`;
+      }
+
+      return {
+        content: [{ type: "text", text: output }],
+      };
+    }
+
+    const trendLabel = trendingType === "add" ? "Uptrending" : "Downtrending";
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `## Your ${trendLabel} Players\n\n${myTrendingPlayers
+            .map(
+              (player) =>
+                `• **${player.name}** (${player.team}) - ${player.playerTrend}`
+            )
+            .join("\n")}`,
         },
       ],
     };
@@ -399,6 +577,66 @@ mcpServer.tool(
       `Lineup Analysis for ${username} vs Opponent in Week ${week}`,
       week,
       userId
+    );
+  }
+);
+
+mcpServer.tool(
+  "get-season-head-to-head",
+  "Gets the complete head-to-head record between two users for an entire season, including win/loss record, total points, and game-by-game results",
+  userLeagueYearOpponentShape,
+  async ({ username, leagueName, year, opponentUsername }) => {
+    // Validate both usernames exist
+    const userId = await fetchUserId(username);
+    const opponentId = await fetchUserId(opponentUsername);
+
+    if (!userId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not find user ID for username: ${username}. Ensure the username is valid.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (!opponentId) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Could not find user ID for opponent username: ${opponentUsername}. Ensure the username is valid.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    return await processLeagueDataByYear(
+      username,
+      leagueName,
+      year,
+      processSeasonMatchupsBetweenUsers,
+      `Season Head-to-Head: ${username} vs ${opponentUsername}`,
+      username,
+      opponentUsername
+    );
+  }
+);
+
+mcpServer.tool(
+  "get-league-playoff-bracket",
+  "Gets the current playoff bracket showing matchups, winners, and bracket progression for a league",
+  userLeagueRequiredYearShape,
+  async ({ username, leagueName, year }) => {
+    return await processLeagueDataByYear(
+      username,
+      leagueName,
+      year,
+      processPlayoffBracket,
+      `Playoff Bracket for ${leagueName}`
     );
   }
 );

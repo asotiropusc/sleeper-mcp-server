@@ -8,12 +8,17 @@ import {
   SeasonType,
   PlayoffMatchup,
   PlayerMap,
+  PlayerTrend,
 } from "../models/index.js";
 import {
+  buildBracket,
+  enhanceMatchupWithPlayerDetails,
+  enhanceRosterWithPlayerDetails,
   fetchPlayerMap,
-  getUserIdsFromRosterId,
   getUserRosterId,
+  mapPlayerDetails,
   normalizeString,
+  PlayoffRoundType,
 } from "./helpers.js";
 
 export const SLEEPER_API_BASE = "https://api.sleeper.app/v1";
@@ -37,22 +42,35 @@ interface Standing {
   rosterId: string;
 }
 
-interface PlayerDetail {
+interface TrendingPlayer {
   playerId: string;
   name: string;
   position: string;
-  rosterSlot: string;
   team: string;
-  points: number;
+  playerTrend: string;
+  trendType: "add" | "drop";
+  trendRank: number;
 }
+
+export interface PlayerDetail {
+  playerId: string;
+  name: string;
+  position: string;
+  team: string;
+  rosterSlot?: string;
+  points?: number;
+}
+
+export type MatchupPlayerDetail = PlayerDetail &
+  Required<Pick<PlayerDetail, "rosterSlot" | "points">>;
 
 export interface EnhancedMatchup
   extends Omit<
     Matchup,
     "starters" | "starters_points" | "players" | "players_points"
   > {
-  starters: PlayerDetail[];
-  bench: PlayerDetail[];
+  starters: MatchupPlayerDetail[];
+  bench: MatchupPlayerDetail[];
 }
 
 const userCache = new Map<string, string>();
@@ -99,7 +117,6 @@ export async function fetchUserId(username: string): Promise<string | null> {
   if (cached) return cached;
 
   const userData = await fetchUser(username);
-
   if (!userData) return null;
 
   const { user_id } = userData;
@@ -125,7 +142,6 @@ export async function fetchLeagueId(
   if (!leagues) return null;
 
   const normalizedName = normalizeString(leagueName);
-
   const league = leagues.find(
     (l: League) => normalizeString(l.name) === normalizedName
   );
@@ -135,26 +151,29 @@ export async function fetchLeagueId(
   return league.league_id;
 }
 
+export async function fetchLeagueData(leagueId: string): Promise<League | null>;
 export async function fetchLeagueData(
-  username?: string,
-  leagueName?: string,
-  leagueId?: string
-): Promise<League | null> {
-  const id =
-    leagueId ??
-    (username && leagueName && (await fetchLeagueId(username, leagueName)));
-  if (!id) return null;
+  leagueName: string,
+  username: string
+): Promise<League | null>;
+export async function fetchLeagueData(
+  leagueIdentifier: string,
+  username?: string
+) {
+  if (username) {
+    const id = await fetchLeagueId(username, leagueIdentifier);
+    if (!id) return null;
+    leagueIdentifier = id;
+  }
 
-  const leagueUrl = `${SLEEPER_API_BASE}/league/${id}`;
+  const leagueUrl = `${SLEEPER_API_BASE}/league/${leagueIdentifier}`;
   return await makeRequest<League>(leagueUrl);
 }
 
 export async function fetchLeagueRosterPositions(
-  username?: string,
-  leagueName?: string,
-  leagueId?: string
+  leagueId: string
 ): Promise<string[] | null> {
-  const leagueDetails = await fetchLeagueData(username, leagueName, leagueId);
+  const leagueDetails = await fetchLeagueData(leagueId);
 
   return leagueDetails ? leagueDetails.roster_positions : null;
 }
@@ -173,18 +192,37 @@ export async function fetchLeagues(
   return leaguesData;
 }
 
-export async function fetchLeagueRosters(
-  username?: string,
-  leagueName?: string,
-  leagueId?: string
-): Promise<Roster[] | null> {
-  const id =
-    leagueId ??
-    (username && leagueName && (await fetchLeagueId(username, leagueName)));
-  if (!id) return null;
+export interface EnhancedRoster extends Roster {
+  ownerNames: string[];
+  ownerIds: string[];
+}
 
-  const rostersUrl = `${SLEEPER_API_BASE}/league/${id}/rosters`;
-  return await makeRequest<Roster[]>(rostersUrl);
+export async function fetchLeagueRosters(
+  leagueId: string
+): Promise<EnhancedRoster[] | null> {
+  const rostersUrl = `${SLEEPER_API_BASE}/league/${leagueId}/rosters`;
+  const rosters = await makeRequest<Roster[]>(rostersUrl);
+  if (!rosters || rosters.length === 0) return null;
+
+  const enhancedRosters = await Promise.all(
+    rosters.map(async (roster) => {
+      const owners = [roster.owner_id, ...(roster.co_owners || [])];
+      const usernames = await Promise.all(
+        owners.map(async (id) => {
+          const user = await fetchUser(id);
+          return user ? user.username : "unknown username";
+        })
+      );
+
+      return {
+        ...roster,
+        ownerNames: usernames,
+        ownerIds: owners,
+      };
+    })
+  );
+
+  return enhancedRosters;
 }
 
 export async function chainLeagueHistory(
@@ -203,11 +241,7 @@ export async function chainLeagueHistory(
 
   if (!leagueDetails.previous_league_id) return true;
 
-  const newLeague = await fetchLeagueData(
-    username,
-    leagueName,
-    leagueDetails.previous_league_id
-  );
+  const newLeague = await fetchLeagueData(leagueDetails.previous_league_id);
 
   if (!newLeague) return false;
 
@@ -223,7 +257,7 @@ export async function fetchLeagueHistoryMap(
   username: string,
   leagueName: string
 ): Promise<Record<string, LeagueHistoryEntry> | null> {
-  const currentLeague = await fetchLeagueData(username, leagueName);
+  const currentLeague = await fetchLeagueData(leagueName, username);
 
   if (!currentLeague) return null;
 
@@ -240,8 +274,6 @@ export async function fetchLeagueHistoryMap(
 }
 
 export async function fetchMatchup(
-  username: string,
-  leagueName: string,
   leagueId: string,
   week: number,
   userId: string,
@@ -249,15 +281,15 @@ export async function fetchMatchup(
 ): Promise<{
   userRoster: EnhancedMatchup;
   opponentRoster: EnhancedMatchup;
-  userOwners: string;
-  opponentOwners: string;
+  userOwners: string[];
+  opponentOwners: string[];
   matchupStatus: "completed" | "in_progress" | "upcoming";
 } | null> {
   const matchupUrl = `${SLEEPER_API_BASE}/league/${leagueId}/matchups/${week}`;
   const allMatchups = await makeRequest<Matchup[]>(matchupUrl);
   if (!allMatchups) return null;
 
-  const rosters = await fetchLeagueRosters(username, leagueName, leagueId);
+  const rosters = await fetchLeagueRosters(leagueId);
   if (!rosters) return null;
 
   const rosterId = getUserRosterId(userId, rosters);
@@ -275,27 +307,15 @@ export async function fetchMatchup(
   );
   if (!opponentRoster) return null;
 
-  // Get owner IDs for both teams
-  const userOwnerIds = getUserIdsFromRosterId(rosterId, rosters);
-  const opponentOwnerIds = getUserIdsFromRosterId(
-    opponentRoster.roster_id,
-    rosters
+  const userEnhancedRoster = rosters.find((r) => r.roster_id === rosterId);
+  const opponentEnhancedRoster = rosters.find(
+    (r) => r.roster_id === opponentRoster.roster_id
   );
 
-  const getUsernames = async (ownerIds: string[]): Promise<string> => {
-    const names = await Promise.all(
-      ownerIds.map(async (ownerId) => {
-        const ownerData = await fetchUser(ownerId);
-        return ownerData?.username || "Unknown Manager";
-      })
-    );
-    return names.length === 1 ? names[0] : names.join(" & ");
-  };
+  if (!userEnhancedRoster || !opponentEnhancedRoster) return null;
 
-  const [userOwners, opponentOwners] = await Promise.all([
-    getUsernames(userOwnerIds),
-    getUsernames(opponentOwnerIds),
-  ]);
+  const userOwners = userEnhancedRoster.ownerNames;
+  const opponentOwners = opponentEnhancedRoster.ownerNames;
 
   const nflState = await fetchNFLState();
   if (!nflState) return null; // Stay consistent with error handling
@@ -325,88 +345,22 @@ export async function fetchMatchup(
     }
   }
 
-  const rosterPositions = await fetchLeagueRosterPositions(
-    username,
-    leagueName,
-    leagueId
-  );
+  const rosterPositions = await fetchLeagueRosterPositions(leagueId);
   if (!rosterPositions) return null;
 
   const playerData = fetchPlayerMap();
   if (!playerData) return null;
 
-  function mapStarters(
-    matchup: Matchup,
-    rosterPositions: string[],
-    playerData: PlayerMap
-  ) {
-    const starters = matchup.starters || [];
-    const starterPoints = matchup.starters_points || [];
-
-    const starterPositions = rosterPositions?.slice(0, starters.length);
-
-    return starters.map((playerId, index) => {
-      const playerDetail = playerData[playerId];
-      const position =
-        playerDetail.fantasy_positions.length === 1
-          ? playerDetail.fantasy_positions[0]
-          : playerDetail.fantasy_positions.join(", ");
-
-      return {
-        playerId,
-        name: playerDetail.full_name,
-        position,
-        rosterSlot: starterPositions[index] || "UNKNOWN",
-        team: playerDetail.team || "UNKNOWN",
-        points: starterPoints[index] || 0,
-      };
-    });
-  }
-
-  function mapBenchPlayers(matchup: Matchup, playerData: PlayerMap) {
-    const allPlayers = matchup.players || [];
-    const starters = matchup.starters || [];
-    const playersPoints = matchup.players_points || {};
-
-    const benchPlayerIds = allPlayers.filter(
-      (playerId) => !starters.includes(playerId)
-    );
-
-    return benchPlayerIds.map((playerId) => {
-      const playerDetail = playerData[playerId];
-      const position =
-        playerDetail.fantasy_positions.length === 1
-          ? playerDetail.fantasy_positions[0]
-          : playerDetail.fantasy_positions.join(", ");
-
-      return {
-        playerId,
-        name: playerDetail.full_name,
-        position,
-        rosterSlot: "BN",
-        team: playerDetail.team || "UNKNOWN",
-        points: playersPoints[playerId] || 0,
-      };
-    });
-  }
-
-  const userEnhancedMatchup: EnhancedMatchup = {
-    roster_id: userRoster.roster_id,
-    matchup_id: userRoster.matchup_id,
-    points: userRoster.points,
-    custom_points: userRoster.custom_points,
-    starters: mapStarters(userRoster, rosterPositions, playerData),
-    bench: mapBenchPlayers(userRoster, playerData),
-  };
-
-  const opponentEnhancedMatchup: EnhancedMatchup = {
-    roster_id: opponentRoster.roster_id,
-    matchup_id: opponentRoster.matchup_id,
-    points: opponentRoster.points,
-    custom_points: opponentRoster.custom_points,
-    starters: mapStarters(opponentRoster, rosterPositions, playerData),
-    bench: mapBenchPlayers(opponentRoster, playerData),
-  };
+  const userEnhancedMatchup = enhanceMatchupWithPlayerDetails(
+    userRoster,
+    playerData,
+    rosterPositions
+  );
+  const opponentEnhancedMatchup = enhanceMatchupWithPlayerDetails(
+    opponentRoster,
+    playerData,
+    rosterPositions
+  );
 
   return {
     userRoster: userEnhancedMatchup,
@@ -418,22 +372,17 @@ export async function fetchMatchup(
 }
 
 export async function fetchMatchupSummary(
-  username: string,
-  leagueName: string,
   leagueId: string,
   week: number,
   userId: string,
   matchupYear: string
 ) {
   const matchupDetails = await fetchMatchup(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
     matchupYear
   );
-
   if (!matchupDetails) return null;
 
   const {
@@ -475,16 +424,12 @@ export async function fetchMatchupSummary(
 }
 
 export async function fetchMatchupStarters(
-  username: string,
-  leagueName: string,
   leagueId: string,
   week: number,
   userId: string,
   matchupYear: string
 ) {
   const matchupDetails = await fetchMatchup(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
@@ -517,16 +462,12 @@ export async function fetchMatchupStarters(
 }
 
 export async function fetchMatchupBench(
-  username: string,
-  leagueName: string,
   leagueId: string,
   week: number,
   userId: string,
   matchupYear: string
 ) {
   const matchupDetails = await fetchMatchup(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
@@ -569,16 +510,12 @@ export async function fetchMatchupBench(
 }
 
 export async function fetchBenchVsStarterAnalysis(
-  username: string,
-  leagueName: string,
   leagueId: string,
   week: number,
   userId: string,
   matchupYear: string
 ) {
   const matchupDetails = await fetchMatchup(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
@@ -663,13 +600,11 @@ export async function fetchBenchVsStarterAnalysis(
 }
 
 export async function fetchLeaguePlayoffHistory(
-  username: string,
-  leagueName: string,
   leagueId: string,
   season: string
 ): Promise<YearlyPlayoffData | null> {
   // Get the league data to check if it's complete
-  const leagueData = await fetchLeagueData(username, leagueName, leagueId);
+  const leagueData = await fetchLeagueData(leagueId);
   if (!leagueData) {
     return null;
   }
@@ -694,9 +629,7 @@ export async function fetchLeaguePlayoffHistory(
     isIncomplete: false,
   };
 
-  // Fetch the winners bracket
-  const winnersBracketUrl = `${SLEEPER_API_BASE}/league/${leagueId}/winners_bracket`;
-  const winnersBracket = await makeRequest<PlayoffMatchup[]>(winnersBracketUrl);
+  const winnersBracket = await fetchWinnersBracket(leagueId);
 
   if (!winnersBracket) {
     yearResult.placements[1] = ["Could not fetch playoff data"];
@@ -723,11 +656,7 @@ export async function fetchLeaguePlayoffHistory(
   }, [] as Standing[]);
 
   // Fetch rosters
-  const historicalRosters = await fetchLeagueRosters(
-    username,
-    leagueName,
-    leagueId
-  );
+  const historicalRosters = await fetchLeagueRosters(leagueId);
 
   if (!historicalRosters || finalStandings.length === 0) {
     yearResult.placements[1] = ["No playoff data available"];
@@ -758,16 +687,7 @@ export async function fetchLeaguePlayoffHistory(
       continue;
     }
 
-    // Get all owner IDs and fetch usernames
-    const ownerIds = [roster.owner_id, ...(roster.co_owners || [])];
-    const usernames: string[] = [];
-
-    for (const ownerId of ownerIds) {
-      const userDetails = await fetchUser(ownerId);
-      if (userDetails) {
-        usernames.push(userDetails.username);
-      }
-    }
+    const usernames = roster.ownerNames;
 
     if (standing.placement === "missed_playoffs") {
       yearResult.missedPlayoffs.push(...usernames);
@@ -785,4 +705,254 @@ export async function fetchPlayerData(): Promise<PlayerMap | null> {
   return await makeRequest<PlayerMap>(playerDataUrl);
 }
 
-// TODO: fetchMatchupHistory
+export async function fetchLeaguePlayoffSchedule(leagueId: string): Promise<{
+  playoffWeekStart: number;
+  playoffTeams: number;
+  playoffRoundType: PlayoffRoundType;
+  totalWeeks: number;
+  rounds: string[];
+  roundToWeekMapping: Record<string, number[]>;
+} | null> {
+  const leagueData = await fetchLeagueData(leagueId);
+
+  if (!leagueData) {
+    return null;
+  }
+
+  const { playoff_week_start, playoff_teams, playoff_round_type } =
+    leagueData.settings;
+
+  let rounds = [];
+  if (playoff_teams <= 4) {
+    rounds = ["semifinals", "finals"];
+  } else {
+    rounds = ["quarterfinals", "semifinals", "finals"];
+  }
+
+  let weekDurations = [];
+  switch (playoff_round_type) {
+    case PlayoffRoundType.ONE_WEEK_PER_ROUND:
+      weekDurations = rounds.map(() => 1);
+      break;
+    case PlayoffRoundType.TWO_WEEK_CHAMPIONSHIP:
+      weekDurations = rounds.map((round) => (round === "finals" ? 2 : 1));
+      break;
+    case PlayoffRoundType.TWO_WEEKS_PER_ROUND:
+      weekDurations = rounds.map(() => 2);
+      break;
+    default:
+      weekDurations = rounds.map(() => 1);
+  }
+
+  const roundToWeekMapping: Record<string, number[]> = {};
+  let currentWeek = playoff_week_start;
+
+  for (let i = 0; i < rounds.length; i++) {
+    const round = rounds[i];
+    const duration = weekDurations[i];
+
+    if (duration === 1) {
+      // Single week round
+      roundToWeekMapping[round] = [currentWeek];
+    } else {
+      // Multi-week round
+      roundToWeekMapping[round] = [currentWeek, currentWeek + 1];
+    }
+
+    // Move to the next week based on duration
+    currentWeek += duration;
+  }
+
+  // Calculate total weeks (currentWeek - 1 because currentWeek is now one past the last week)
+  const totalWeeks = currentWeek - 1;
+
+  return {
+    playoffWeekStart: playoff_week_start,
+    playoffTeams: playoff_teams,
+    playoffRoundType: playoff_round_type,
+    totalWeeks,
+    rounds,
+    roundToWeekMapping,
+  };
+}
+
+// username, opponentName -> need to find roster ids
+export async function fetchSeasonMatchupsBetweenUsers(
+  opponentUsername: string,
+  leagueId: string,
+  userId: string,
+  season: string
+) {
+  const opponentId = await fetchUserId(opponentUsername);
+
+  const leagueRosters = await fetchLeagueRosters(leagueId);
+
+  const playoffSchedule = await fetchLeaguePlayoffSchedule(leagueId);
+
+  if (!userId || !opponentId || !leagueRosters || !playoffSchedule) return null;
+
+  const opponentRosterId = getUserRosterId(opponentId, leagueRosters);
+  const { totalWeeks } = playoffSchedule;
+
+  const nflState = await fetchNFLState();
+  if (!nflState) return null;
+
+  const { currentWeek, currentSeason } = nflState;
+
+  let weeksToProcess: number = totalWeeks;
+
+  if (season === currentSeason) {
+    weeksToProcess = currentWeek > 1 ? currentWeek - 1 : 0;
+  }
+
+  const matchups = [];
+  for (let week = 1; week <= weeksToProcess; week++) {
+    const weekMatchup = await fetchMatchup(leagueId, week, userId, season);
+    if (!weekMatchup) continue;
+
+    if (opponentRosterId === weekMatchup.opponentRoster.roster_id) {
+      matchups.push({
+        week,
+        userScore: weekMatchup.userRoster.points,
+        opponentScore: weekMatchup.opponentRoster.points,
+      });
+    }
+  }
+
+  return matchups;
+}
+
+export async function fetchTrendingPlayers(
+  trendType: "add" | "drop" | "all"
+): Promise<TrendingPlayer[] | null> {
+  if (trendType === "all") {
+    const [addPlayers, dropPlayers] = await Promise.all([
+      fetchTrendingPlayers("add"),
+      fetchTrendingPlayers("drop"),
+    ]);
+
+    if (!addPlayers || !dropPlayers) return null;
+
+    return [
+      ...addPlayers.map((player) => ({ ...player, trendType: "add" as const })),
+      ...dropPlayers.map((player) => ({
+        ...player,
+        trendType: "drop" as const,
+      })),
+    ];
+  }
+
+  const trendingUrl = `${SLEEPER_API_BASE}/players/nfl/trending/${trendType}`;
+
+  const trendingData = await makeRequest<PlayerTrend[]>(trendingUrl);
+  const playerData = fetchPlayerMap();
+
+  if (!trendingData || !playerData) return null;
+
+  return trendingData.map((player, index): TrendingPlayer => {
+    const playerDetails = mapPlayerDetails(player.player_id, playerData);
+
+    return {
+      ...playerDetails,
+      playerTrend:
+        trendType === "add" ? `+${player.count}` : `-${player.count}`,
+      trendType: trendType as "add" | "drop",
+      trendRank: index + 1,
+    };
+  });
+}
+
+export async function fetchUserRoster(
+  username: string,
+  leagueName: string,
+  year: string = new Date().getFullYear().toString()
+): Promise<{
+  starters: PlayerDetail[];
+  bench: PlayerDetail[];
+  taxi: PlayerDetail[];
+  reserve: PlayerDetail[];
+} | null> {
+  const userId = await fetchUserId(username);
+  if (!userId) return null;
+
+  const leagueId = await fetchLeagueId(username, leagueName, year);
+  if (!leagueId) return null;
+
+  const rosters = await fetchLeagueRosters(leagueId);
+  if (!rosters) return null;
+
+  const userRosterId = getUserRosterId(userId, rosters);
+  if (!userRosterId) return null;
+
+  const userRoster = rosters.find(
+    (roster) => roster.roster_id === userRosterId
+  );
+  const playerMap = fetchPlayerMap();
+
+  if (!userRoster || !playerMap) return null;
+
+  return enhanceRosterWithPlayerDetails(userRoster, playerMap);
+}
+
+export async function fetchMyTrendingRosterPlayers(
+  username: string,
+  leagueName: string,
+  trendType: "add" | "drop" | "all"
+) {
+  const [trendingPlayers, userRoster] = await Promise.all([
+    fetchTrendingPlayers(trendType),
+    fetchUserRoster(username, leagueName),
+  ]);
+
+  if (!trendingPlayers || !userRoster) return null;
+
+  // Flatten all roster player IDs
+  const allRosterPlayerIds = [
+    ...userRoster.starters.map((p) => p.playerId),
+    ...userRoster.bench.map((p) => p.playerId),
+    ...userRoster.taxi.map((p) => p.playerId),
+    ...userRoster.reserve.map((p) => p.playerId),
+  ];
+
+  return trendingPlayers.filter((player) =>
+    allRosterPlayerIds.includes(player.playerId)
+  );
+}
+
+export async function fetchWinnersBracket(leagueId: string) {
+  const winnersBracketUrl = `${SLEEPER_API_BASE}/league/${leagueId}/winners_bracket`;
+  return await makeRequest<PlayoffMatchup[]>(winnersBracketUrl);
+}
+
+export async function fetchLeaguePlayoffBracket(leagueId: string) {
+  const [bracketData, rosters, leagueData] = await Promise.all([
+    fetchWinnersBracket(leagueId),
+    fetchLeagueRosters(leagueId),
+    fetchLeagueData(leagueId),
+  ]);
+
+  if (!bracketData || !rosters || !leagueData) return null;
+
+  if (leagueData.status === Status.complete) {
+    return buildBracket(bracketData, rosters, "completed");
+  }
+
+  const [nflState, playoffSchedule] = await Promise.all([
+    fetchNFLState(),
+    fetchLeaguePlayoffSchedule(leagueId),
+  ]);
+
+  if (!nflState || !playoffSchedule) return null;
+
+  const { currentWeek } = nflState;
+  const { playoffWeekStart } = playoffSchedule;
+
+  if (currentWeek < playoffWeekStart) {
+    return {
+      bracketByRound: {},
+      playoffStatus: "not_started" as const,
+    };
+  }
+
+  return buildBracket(bracketData, rosters, "in_progress");
+}

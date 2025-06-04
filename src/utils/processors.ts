@@ -1,30 +1,34 @@
+import { LeagueScoringSettings } from "../models/League.js";
 import {
   fetchBenchVsStarterAnalysis,
   fetchLeagueData,
+  fetchLeaguePlayoffBracket,
   fetchLeaguePlayoffHistory,
+  fetchLeaguePlayoffSchedule,
   fetchLeagueRosterPositions,
   fetchMatchupBench,
   fetchMatchupStarters,
   fetchMatchupSummary,
+  fetchSeasonMatchupsBetweenUsers,
 } from "./api.js";
 import {
   formatDefensiveScoring,
   formatKickingScoring,
+  formatMatchup,
   formatOffensiveScoring,
   getDayOfWeek,
   getPlayoffRoundTypeDescription,
   getPositionLabel,
+  getRoundName,
   getWaiverType,
   getWaiverTypeDescription,
-  PlayoffRoundType,
 } from "./helpers.js";
 
 export interface Processor<T> {
   (
-    username: string,
-    leagueName: string,
-    currYear: string,
+    userId: string,
     leagueId: string,
+    currYear: string,
     ...args: any[]
   ): Promise<T>;
 }
@@ -34,12 +38,11 @@ interface Counter {
 }
 
 export const processLeagueSettings: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
-  leagueId: string
+  userId: string,
+  leagueId: string,
+  currYear: string
 ) => {
-  const leagueData = await fetchLeagueData(username, leagueName, leagueId);
+  const leagueData = await fetchLeagueData(leagueId);
 
   if (!leagueData) {
     return `Year ${currYear}:\n  Error: Could not fetch data for this year`;
@@ -78,60 +81,22 @@ export const processLeagueSettings: Processor<string> = async (
 };
 
 export const processPlayoffSchedule: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
-  leagueId: string
+  userId: string,
+  leagueId: string,
+  currYear: string
 ) => {
-  const leagueData = await fetchLeagueData(username, leagueName, leagueId);
+  const scheduleData = await fetchLeaguePlayoffSchedule(leagueId);
 
-  if (!leagueData) {
+  if (!scheduleData) {
     return `Year ${currYear}:\n  Error: Could not fetch data for this year`;
   }
 
-  const { playoff_week_start, playoff_teams, playoff_round_type } =
-    leagueData.settings;
-
-  let rounds = [];
-  if (playoff_teams <= 4) {
-    rounds = ["semifinals", "finals"];
-  } else {
-    rounds = ["quarterfinals", "semifinals", "finals"];
-  }
-
-  let weekDurations = [];
-  switch (playoff_round_type) {
-    case PlayoffRoundType.ONE_WEEK_PER_ROUND:
-      weekDurations = rounds.map(() => 1);
-      break;
-    case PlayoffRoundType.TWO_WEEK_CHAMPIONSHIP:
-      weekDurations = rounds.map((round) => (round === "finals" ? 2 : 1));
-      break;
-    case PlayoffRoundType.TWO_WEEKS_PER_ROUND:
-      weekDurations = rounds.map(() => 2);
-      break;
-    default:
-      weekDurations = rounds.map(() => 1);
-  }
-
-  const roundToWeekMapping: Record<string, number[]> = {};
-  let currentWeek = playoff_week_start;
-
-  for (let i = 0; i < rounds.length; i++) {
-    const round = rounds[i];
-    const duration = weekDurations[i];
-
-    if (duration === 1) {
-      // Single week round
-      roundToWeekMapping[round] = [currentWeek];
-    } else {
-      // Multi-week round
-      roundToWeekMapping[round] = [currentWeek, currentWeek + 1];
-    }
-
-    // Move to the next week based on duration
-    currentWeek += duration;
-  }
+  const {
+    playoffWeekStart,
+    playoffTeams,
+    playoffRoundType,
+    roundToWeekMapping,
+  } = scheduleData;
 
   const formattedWeeks = Object.entries(roundToWeekMapping)
     .map(([round, weeks]) => {
@@ -143,24 +108,23 @@ export const processPlayoffSchedule: Processor<string> = async (
 
   const yearSummary = [
     `Year ${currYear}:`,
-    `  • Playoff Teams: ${playoff_teams}`,
-    `  • Playoff Start Week: ${playoff_week_start}`,
-    `  • Format: ${getPlayoffRoundTypeDescription(playoff_round_type)}`,
+    `  • Playoff Teams: ${playoffTeams}`,
+    `  • Playoff Start Week: ${playoffWeekStart}`,
+    `  • Format: ${getPlayoffRoundTypeDescription(playoffRoundType)}`,
     `  • Rounds:`,
-    `	 ${formattedWeeks}`,
+    `    ${formattedWeeks}`,
   ].join("\n");
 
   return yearSummary;
 };
 
 export const processScoringSettings: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
+  userId: string,
   leagueId: string,
+  currYear: string,
   category: string
 ) => {
-  const leagueData = await fetchLeagueData(username, leagueName, leagueId);
+  const leagueData = await fetchLeagueData(leagueId);
 
   if (!leagueData) {
     return `Year ${currYear}:\n  Error: Could not fetch data for this year`;
@@ -177,7 +141,15 @@ export const processScoringSettings: Processor<string> = async (
     return `Year ${currYear}:\n  No kicker roster slot - Kicker scoring not available`;
   }
 
-  const { scoring_settings } = leagueData;
+  let { scoring_settings } = leagueData;
+
+  scoring_settings = Object.fromEntries(
+    Object.entries(scoring_settings).map(([key, val]) => [
+      key,
+      Number(val.toFixed(2)),
+    ])
+  ) as LeagueScoringSettings;
+
   const yearSections = [];
 
   if (category === "all" || category === "offensive") {
@@ -216,16 +188,11 @@ export const processScoringSettings: Processor<string> = async (
 };
 
 export const processRosterSettings: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
-  leagueId: string
+  userId: string,
+  leagueId: string,
+  currYear: string
 ) => {
-  const rosterPositions = await fetchLeagueRosterPositions(
-    username,
-    leagueName,
-    leagueId
-  );
+  const rosterPositions = await fetchLeagueRosterPositions(leagueId);
 
   if (!rosterPositions) {
     return `Year ${currYear}:\n  Error: Could not fetch roster positions for this year`;
@@ -247,16 +214,12 @@ export const processRosterSettings: Processor<string> = async (
 };
 
 export const processMatchupDetails: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
+  userId: string,
   leagueId: string,
-  week: number,
-  userId: string
+  currYear: string,
+  week: number
 ) => {
   const matchupData = await fetchMatchupSummary(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
@@ -301,17 +264,11 @@ export const processMatchupDetails: Processor<string> = async (
 };
 
 export const processPlayoffHistory: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
-  leagueId: string
+  userId: string,
+  leagueId: string,
+  currYear: string
 ) => {
-  const yearData = await fetchLeaguePlayoffHistory(
-    username,
-    leagueName,
-    leagueId,
-    currYear
-  );
+  const yearData = await fetchLeaguePlayoffHistory(leagueId, currYear);
 
   if (!yearData) {
     return `Year ${currYear}:\n  Error: Could not fetch playoff data for this year`;
@@ -340,16 +297,12 @@ export const processPlayoffHistory: Processor<string> = async (
 };
 
 export const processMatchupStarters: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
+  userId: string,
   leagueId: string,
-  week: number,
-  userId: string
+  currYear: string,
+  week: number
 ) => {
   const starterData = await fetchMatchupStarters(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
@@ -400,21 +353,12 @@ export const processMatchupStarters: Processor<string> = async (
 };
 
 export const processMatchupBench: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
+  userId: string,
   leagueId: string,
-  week: number,
-  userId: string
+  currYear: string,
+  week: number
 ) => {
-  const benchData = await fetchMatchupBench(
-    username,
-    leagueName,
-    leagueId,
-    week,
-    userId,
-    currYear
-  );
+  const benchData = await fetchMatchupBench(leagueId, week, userId, currYear);
 
   if (!benchData) {
     return `Year ${currYear}, Week ${week}:\n  Error: Could not fetch bench data for this matchup`;
@@ -463,16 +407,12 @@ export const processMatchupBench: Processor<string> = async (
 };
 
 export const processBenchVsStarterAnalysis: Processor<string> = async (
-  username: string,
-  leagueName: string,
-  currYear: string,
+  userId: string,
   leagueId: string,
-  week: number,
-  userId: string
+  currYear: string,
+  week: number
 ) => {
   const analysisData = await fetchBenchVsStarterAnalysis(
-    username,
-    leagueName,
     leagueId,
     week,
     userId,
@@ -497,9 +437,9 @@ export const processBenchVsStarterAnalysis: Processor<string> = async (
     let teamOutput = [`  ${name}'s Lineup Analysis:`];
 
     if (analysis.optimalChoices) {
-      teamOutput.push("    ✅ Made optimal lineup choices");
+      teamOutput.push("    Made optimal lineup choices");
     } else {
-      teamOutput.push("    ❌ Could have made better lineup choices");
+      teamOutput.push("    Could have made better lineup choices");
       teamOutput.push(
         `    Worst Starter: ${
           analysis.worstStarter.name
@@ -543,11 +483,11 @@ export const processBenchVsStarterAnalysis: Processor<string> = async (
 
   if (summary.couldHaveChangedOutcome) {
     summaryOutput.push(
-      "    🔄 Better lineup decisions could have changed the outcome!"
+      "    Better lineup decisions could have changed the outcome!"
     );
   } else {
     summaryOutput.push(
-      "    ✅ Lineup decisions would not have changed the outcome"
+      "    Lineup decisions would not have changed the outcome"
     );
   }
 
@@ -562,4 +502,124 @@ export const processBenchVsStarterAnalysis: Processor<string> = async (
   ].join("\n");
 
   return output;
+};
+
+export const processSeasonMatchupsBetweenUsers: Processor<string> = async (
+  userId: string,
+  leagueId: string,
+  currYear: string,
+  username: string,
+  opponentUsername: string
+) => {
+  const matchupData = await fetchSeasonMatchupsBetweenUsers(
+    opponentUsername,
+    leagueId,
+    userId,
+    currYear
+  );
+
+  if (!matchupData) {
+    return `Year ${currYear}:\n  Error: Could not fetch head-to-head data between ${username} and ${opponentUsername}`;
+  }
+
+  if (matchupData.length === 0) {
+    return `Year ${currYear}:\n  ${username} and ${opponentUsername} did not play each other this season`;
+  }
+
+  // Calculate win/loss record
+  let userWins = 0;
+  let opponentWins = 0;
+  let ties = 0;
+
+  const matchupDetails = matchupData.map((matchup) => {
+    const { week, userScore, opponentScore } = matchup;
+
+    if (userScore > opponentScore) {
+      userWins++;
+      return `    Week ${week}: ${username} ${userScore.toFixed(
+        2
+      )} - ${opponentScore.toFixed(2)} ${opponentUsername} (W)`;
+    } else if (opponentScore > userScore) {
+      opponentWins++;
+      return `    Week ${week}: ${username} ${userScore.toFixed(
+        2
+      )} - ${opponentScore.toFixed(2)} ${opponentUsername} (L)`;
+    } else {
+      ties++;
+      return `    Week ${week}: ${username} ${userScore.toFixed(
+        2
+      )} - ${opponentScore.toFixed(2)} ${opponentUsername} (T)`;
+    }
+  });
+
+  // Calculate total points
+  const userTotalPoints = matchupData.reduce((sum, m) => sum + m.userScore, 0);
+  const opponentTotalPoints = matchupData.reduce(
+    (sum, m) => sum + m.opponentScore,
+    0
+  );
+
+  // Build the record string
+  let recordString = `${userWins}-${opponentWins}`;
+  if (ties > 0) {
+    recordString += `-${ties}`;
+  }
+
+  const output = [
+    `Year ${currYear} Head-to-Head: ${username} vs ${opponentUsername}`,
+    `  Record: ${username} ${recordString}`,
+    `  Total Games: ${matchupData.length}`,
+    `  Total Points: ${username} ${userTotalPoints.toFixed(
+      2
+    )} - ${opponentTotalPoints.toFixed(2)} ${opponentUsername}`,
+    "",
+    `  Game Results:`,
+    ...matchupDetails,
+  ].join("\n");
+
+  return output;
+};
+
+export const processPlayoffBracket: Processor<string> = async (
+  userId: string,
+  leagueId: string,
+  currYear: string
+) => {
+  const bracketData = await fetchLeaguePlayoffBracket(leagueId);
+
+  if (!bracketData) {
+    return `Year ${currYear}:\n  Error: Could not fetch playoff bracket data for this year`;
+  }
+
+  const { bracketByRound, playoffStatus } = bracketData;
+
+  // Handle different playoff statuses
+  if (playoffStatus === "not_started") {
+    return `Year ${currYear} Playoff Bracket:\n  Playoffs have not started yet`;
+  }
+
+  if (Object.keys(bracketByRound).length === 0) {
+    return `Year ${currYear} Playoff Bracket:\n  No bracket data available`;
+  }
+
+  // Build the bracket display
+  const output = [`Year ${currYear} Playoff Bracket (${playoffStatus}):`];
+
+  // Process each round
+  const rounds = Object.keys(bracketByRound)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  rounds.forEach((roundNumber) => {
+    const roundName = getRoundName(roundNumber, rounds.length);
+    output.push(`\n  ${roundName}:`);
+
+    const matchups = bracketByRound[roundNumber];
+    matchups.forEach((matchup) => {
+      let matchupLine = formatMatchup(matchup);
+      output.push(`    ${matchupLine}`);
+    });
+  });
+
+  return output.join("\n");
 };
