@@ -8,6 +8,7 @@ import {
   Matchup,
   PlayerMap,
   PlayoffMatchup,
+  PlayoffRoundType,
   Roster,
 } from "../models/index.js";
 import {
@@ -22,12 +23,6 @@ const __dirname = path.dirname(__filename);
 
 const DATA_DIR = path.join(__dirname, "../..", "data");
 const PLAYER_DATA_PATH = path.join(DATA_DIR, "player_data.json");
-
-export enum PlayoffRoundType {
-  ONE_WEEK_PER_ROUND,
-  TWO_WEEK_CHAMPIONSHIP,
-  TWO_WEEKS_PER_ROUND,
-}
 
 export function getPlayoffRoundTypeDescription(
   roundType: PlayoffRoundType
@@ -450,12 +445,18 @@ export function enhanceMatchupWithPlayerDetails(
   };
 }
 
+interface BracketTeam {
+  rosterId: number;
+  ownerNames: string[];
+  ownerIds: string[];
+}
+
 export function buildBracket(
   bracketData: PlayoffMatchup[],
   rosters: EnhancedRoster[],
   playoffStatus: "completed" | "in_progress" | "not_started"
 ) {
-  const rosterMap = new Map();
+  const rosterMap = new Map<number, BracketTeam>();
   rosters.forEach((roster) => {
     rosterMap.set(roster.roster_id, {
       rosterId: roster.roster_id,
@@ -477,8 +478,8 @@ export function buildBracket(
     acc[matchup.r].push({
       round: matchup.r,
       matchupId: matchup.m,
-      team1: rosterMap.get(matchup.t1),
-      team2: rosterMap.get(matchup.t2),
+      team1: matchup.t1 ? rosterMap.get(matchup.t1) : null,
+      team2: matchup.t2 ? rosterMap.get(matchup.t2) : null,
       winner: matchup.w ? rosterMap.get(matchup.w) : null,
       loser: matchup.l ? rosterMap.get(matchup.l) : null,
       isCompleted: !!matchup.w,

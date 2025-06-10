@@ -9,6 +9,7 @@ import {
   PlayoffMatchup,
   PlayerMap,
   PlayerTrend,
+  PlayoffRoundType,
 } from "../models/index.js";
 import {
   buildBracket,
@@ -18,7 +19,6 @@ import {
   getUserRosterId,
   mapPlayerDetails,
   normalizeString,
-  PlayoffRoundType,
 } from "./helpers.js";
 
 export const SLEEPER_API_BASE = "https://api.sleeper.app/v1";
@@ -52,6 +52,77 @@ interface TrendingPlayer {
   trendRank: number;
 }
 
+interface MatchupDetails {
+  userRoster: EnhancedMatchup;
+  opponentRoster: EnhancedMatchup;
+  userOwners: string[];
+  opponentOwners: string[];
+  matchupStatus: "completed" | "in_progress" | "upcoming";
+}
+
+type Winner = string[] | "tie" | null;
+
+interface MatchupSummary {
+  userTeam: {
+    owners: string[];
+    score: number;
+  };
+  opponentTeam: {
+    owners: string[];
+    score: number;
+  };
+  winner: Winner;
+  matchupId: number;
+  week: number;
+  status: "completed" | "in_progress" | "upcoming";
+}
+
+interface MatchupPlayerBreakdown {
+  userTeam: {
+    name: string[];
+    players: MatchupPlayerDetail[];
+    totalPoints: number;
+  };
+  opponentTeam: {
+    name: string[];
+    players: MatchupPlayerDetail[];
+    totalPoints: number;
+  };
+  week: number;
+  matchupStatus: "completed" | "in_progress" | "upcoming";
+}
+
+interface LineupAnalysis {
+  starters: MatchupPlayerDetail[];
+  bench: MatchupPlayerDetail[];
+  worstStarter: MatchupPlayerDetail;
+  outperformingBench: MatchupPlayerDetail[];
+  missedPoints: number;
+  optimalChoices: boolean;
+}
+
+interface BenchVsStarterAnalysis {
+  userTeam: {
+    name: string[];
+    analysis: LineupAnalysis;
+    hasMissedOpportunities: boolean;
+  };
+  opponentTeam: {
+    name: string[];
+    analysis: LineupAnalysis;
+    hasMissedOpportunities: boolean;
+  };
+  week: number;
+  matchupStatus: "completed" | "in_progress" | "upcoming";
+  summary: {
+    userMadeOptimalChoices: boolean;
+    opponentMadeOptimalChoices: boolean;
+    userMissedPoints: number;
+    opponentMissedPoints: number;
+    couldHaveChangedOutcome: boolean;
+  };
+}
+
 export interface PlayerDetail {
   playerId: string;
   name: string;
@@ -72,9 +143,6 @@ export interface EnhancedMatchup
   starters: MatchupPlayerDetail[];
   bench: MatchupPlayerDetail[];
 }
-
-const userCache = new Map<string, string>();
-const leagueCache = new Map<string, string>();
 
 export async function makeRequest<T>(url: string): Promise<T | null> {
   try {
@@ -113,14 +181,10 @@ export async function fetchUser(identifier: string): Promise<User | null> {
 }
 
 export async function fetchUserId(username: string): Promise<string | null> {
-  const cached = userCache.get(username);
-  if (cached) return cached;
-
   const userData = await fetchUser(username);
   if (!userData) return null;
 
   const { user_id } = userData;
-  userCache.set(username, user_id);
 
   return user_id;
 }
@@ -133,10 +197,6 @@ export async function fetchLeagueId(
   const userId = await fetchUserId(username);
   if (!userId) return null;
 
-  const cacheKey = `${userId}-${leagueName}`;
-  const cached = leagueCache.get(cacheKey);
-  if (cached) return cached;
-
   const leaguesUrl = `${SLEEPER_API_BASE}/user/${userId}/leagues/nfl/${year}`;
   const leagues = await makeRequest<League[]>(leaguesUrl);
   if (!leagues) return null;
@@ -147,7 +207,6 @@ export async function fetchLeagueId(
   );
   if (!league) return null;
 
-  leagueCache.set(cacheKey, league.league_id);
   return league.league_id;
 }
 
@@ -278,13 +337,7 @@ export async function fetchMatchup(
   week: number,
   userId: string,
   matchupYear: string
-): Promise<{
-  userRoster: EnhancedMatchup;
-  opponentRoster: EnhancedMatchup;
-  userOwners: string[];
-  opponentOwners: string[];
-  matchupStatus: "completed" | "in_progress" | "upcoming";
-} | null> {
+): Promise<MatchupDetails | null> {
   const matchupUrl = `${SLEEPER_API_BASE}/league/${leagueId}/matchups/${week}`;
   const allMatchups = await makeRequest<Matchup[]>(matchupUrl);
   if (!allMatchups) return null;
@@ -376,7 +429,7 @@ export async function fetchMatchupSummary(
   week: number,
   userId: string,
   matchupYear: string
-) {
+): Promise<MatchupSummary | null> {
   const matchupDetails = await fetchMatchup(
     leagueId,
     week,
@@ -396,7 +449,7 @@ export async function fetchMatchupSummary(
   const userScore = userRoster.points || 0;
   const opponentScore = opponentRoster.points || 0;
 
-  let winner = null;
+  let winner: Winner = null;
 
   if (matchupStatus === "completed") {
     winner =
@@ -428,7 +481,7 @@ export async function fetchMatchupStarters(
   week: number,
   userId: string,
   matchupYear: string
-) {
+): Promise<MatchupPlayerBreakdown | null> {
   const matchupDetails = await fetchMatchup(
     leagueId,
     week,
@@ -448,13 +501,13 @@ export async function fetchMatchupStarters(
   return {
     userTeam: {
       name: userOwners,
-      starters: matchupDetails.userRoster.starters,
-      totalStarterPoints: userRoster.points,
+      players: matchupDetails.userRoster.starters,
+      totalPoints: userRoster.points,
     },
     opponentTeam: {
       name: opponentOwners,
-      starters: matchupDetails.opponentRoster.starters,
-      totalStarterPoints: opponentRoster.points,
+      players: matchupDetails.opponentRoster.starters,
+      totalPoints: opponentRoster.points,
     },
     week,
     matchupStatus,
@@ -466,7 +519,7 @@ export async function fetchMatchupBench(
   week: number,
   userId: string,
   matchupYear: string
-) {
+): Promise<MatchupPlayerBreakdown | null> {
   const matchupDetails = await fetchMatchup(
     leagueId,
     week,
@@ -496,13 +549,13 @@ export async function fetchMatchupBench(
   return {
     userTeam: {
       name: userOwners,
-      benchPlayers: userRoster.bench,
-      totalBenchPoints: userBenchPoints,
+      players: userRoster.bench,
+      totalPoints: userBenchPoints,
     },
     opponentTeam: {
       name: opponentOwners,
-      benchPlayers: opponentRoster.bench,
-      totalBenchPoints: opponentBenchPoints,
+      players: opponentRoster.bench,
+      totalPoints: opponentBenchPoints,
     },
     week,
     matchupStatus,
@@ -514,7 +567,7 @@ export async function fetchBenchVsStarterAnalysis(
   week: number,
   userId: string,
   matchupYear: string
-) {
+): Promise<BenchVsStarterAnalysis | null> {
   const matchupDetails = await fetchMatchup(
     leagueId,
     week,
@@ -531,7 +584,7 @@ export async function fetchBenchVsStarterAnalysis(
     matchupStatus,
   } = matchupDetails;
 
-  function analyzeLineup(matchup: EnhancedMatchup) {
+  function analyzeLineup(matchup: EnhancedMatchup): LineupAnalysis {
     const starters = matchup.starters;
     const bench = matchup.bench;
 
@@ -776,13 +829,16 @@ export async function fetchLeaguePlayoffSchedule(leagueId: string): Promise<{
   };
 }
 
-// username, opponentName -> need to find roster ids
 export async function fetchSeasonMatchupsBetweenUsers(
   opponentUsername: string,
   leagueId: string,
   userId: string,
   season: string
-) {
+): Promise<Array<{
+  week: number;
+  userScore: number;
+  opponentScore: number;
+}> | null> {
   const opponentId = await fetchUserId(opponentUsername);
 
   const leagueRosters = await fetchLeagueRosters(leagueId);
@@ -898,7 +954,7 @@ export async function fetchMyTrendingRosterPlayers(
   username: string,
   leagueName: string,
   trendType: "add" | "drop" | "all"
-) {
+): Promise<TrendingPlayer[] | null> {
   const [trendingPlayers, userRoster] = await Promise.all([
     fetchTrendingPlayers(trendType),
     fetchUserRoster(username, leagueName),
@@ -919,7 +975,9 @@ export async function fetchMyTrendingRosterPlayers(
   );
 }
 
-export async function fetchWinnersBracket(leagueId: string) {
+export async function fetchWinnersBracket(
+  leagueId: string
+): Promise<PlayoffMatchup[] | null> {
   const winnersBracketUrl = `${SLEEPER_API_BASE}/league/${leagueId}/winners_bracket`;
   return await makeRequest<PlayoffMatchup[]>(winnersBracketUrl);
 }

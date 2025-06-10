@@ -6,24 +6,20 @@ export enum Status {
 }
 
 export interface LeagueScoringSettings {
-  // Passing
   pass_yd: number;
   pass_td: number;
   pass_int: number;
   pass_2pt: number;
 
-  // Rushing
   rush_yd: number;
   rush_td: number;
   rush_2pt: number;
 
-  // Receiving
   rec: number;
   rec_yd: number;
   rec_td: number;
   rec_2pt: number;
 
-  // Kicking
   fgm_0_19: number;
   fgm_20_29: number;
   fgm_30_39: number;
@@ -34,7 +30,6 @@ export interface LeagueScoringSettings {
   xpm: number;
   xpmiss: number;
 
-  // Defense & Special Teams
   def_td: number;
   st_td: number;
   st_ff: number;
@@ -48,7 +43,6 @@ export interface LeagueScoringSettings {
   ff: number;
   safe: number;
 
-  // Points Allowed
   pts_allow_0: number;
   pts_allow_1_6: number;
   pts_allow_7_13: number;
@@ -57,7 +51,6 @@ export interface LeagueScoringSettings {
   pts_allow_28_34: number;
   pts_allow_35p: number;
 
-  // Fumbles
   fum: number;
   fum_lost: number;
   fum_rec: number;
@@ -75,7 +68,6 @@ export interface LeagueMetadata {
 }
 
 export interface LeagueSettings {
-  // Team and Schedule Settings
   num_teams: number;
   start_week: number;
   playoff_week_start: number;
@@ -83,13 +75,11 @@ export interface LeagueSettings {
   last_scored_leg: number;
   leg: number;
 
-  // Playoffs Settings
   playoff_teams: number;
   playoff_type: number;
   playoff_seed_type: number;
   playoff_round_type: number;
 
-  // Roster Settings
   reserve_slots: number;
   bench_lock: number;
   taxi_slots: number;
@@ -98,7 +88,6 @@ export interface LeagueSettings {
   taxi_deadline: number;
   capacity_override: number;
 
-  // Transaction Settings
   waiver_type: number;
   waiver_day_of_week: number;
   waiver_clear_days: number;
@@ -116,7 +105,6 @@ export interface LeagueSettings {
   veto_auto_poll: number;
   veto_show_votes: number;
 
-  // Miscellaneous Settings
   best_ball: number;
   daily_waivers: number;
   daily_waivers_days: number;
@@ -127,7 +115,6 @@ export interface LeagueSettings {
   max_subs: number;
   sub_start_time_eligibility: number;
 
-  // Reserve Settings
   reserve_allow_out: number;
   reserve_allow_doubtful: number;
   reserve_allow_na: number;
@@ -135,14 +122,12 @@ export interface LeagueSettings {
   reserve_allow_cov: number;
   reserve_allow_dnr: number;
 
-  // Draft Settings
   draft_rounds: number;
 
   [key: string]: number;
 }
 
 export interface League {
-  // League Identification
   league_id: string;
   name: string;
   season: string;
@@ -150,7 +135,6 @@ export interface League {
   status: Status;
   season_type: string;
 
-  // Related IDs
   draft_id: string;
   bracket_id: number;
   loser_bracket_id: number;
@@ -159,20 +143,16 @@ export interface League {
   company_id: null | string;
   shard: number;
 
-  // Nested Objects
   scoring_settings: LeagueScoringSettings;
   settings: LeagueSettings;
   metadata: LeagueMetadata;
 
-  // League Structure
   total_rosters: number;
   roster_positions: string[];
 
-  // Optional IDs that can be null
   bracket_overrides_id: null | string;
   loser_bracket_overrides_id: null | string;
 
-  // League Chat & Activity
   last_message_id: string;
   last_message_time: number;
   last_message_text_map: null | any;
@@ -185,7 +165,6 @@ export interface League {
   last_pinned_message_id: null | string;
   last_transaction_id: number;
 
-  // Display Settings
   avatar: null | string;
   display_order: number;
 }

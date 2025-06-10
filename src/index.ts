@@ -4,32 +4,20 @@ import { SeasonType } from "./models/NFLState.js";
 import { League } from "./models/League.js";
 import {
   fetchLeagues,
-  fetchLeagueHistoryMap,
   fetchUserId,
   fetchNFLState,
   fetchPlayerData,
   fetchTrendingPlayers,
   fetchMyTrendingRosterPlayers,
 } from "./utils/api.js";
-import { parseYearParameter } from "./utils/helpers.js";
-import {
-  FIELDS,
-  trendingShape,
-  userLeagueRequiredYearShape,
-  userLeagueRequiredYearWeekShape,
-  userLeagueTrendShape,
-  userLeagueYearOpponentShape,
-  userLeagueYearShape,
-  userOnlyShape,
-} from "./utils/schemas.js";
-import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { FIELDS } from "./utils/schemas.js";
 import {
   processBenchVsStarterAnalysis,
+  processLeagueDataByYear,
   processLeagueSettings,
   processMatchupBench,
   processMatchupDetails,
   processMatchupStarters,
-  Processor,
   processPlayoffBracket,
   processPlayoffHistory,
   processPlayoffSchedule,
@@ -55,98 +43,6 @@ const mcpServer = new McpServer({
     tools: {},
   },
 });
-
-async function processLeagueDataByYear<T>(
-  username: string,
-  leagueName: string,
-  year: string | undefined,
-  processor: Processor<T>,
-  title: string,
-  ...processorArgs: any[]
-): Promise<CallToolResult> {
-  const userId = await fetchUserId(username);
-  if (!userId) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Invalid username: ${username}. Prompt user for their username again emphasize that case sensitivity matters.`,
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  const leagueHistoryMap = await fetchLeagueHistoryMap(username, leagueName);
-
-  if (!leagueHistoryMap) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Could not find the data for league: ${leagueName} and username: ${username}. Ensure username and league name are valid`,
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  const availableYears = Object.keys(leagueHistoryMap);
-  const { requestedYears, yearsToProcess } = parseYearParameter(
-    year,
-    availableYears
-  );
-
-  if (yearsToProcess.length === 0) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `No league data found for the specified year(s): ${year}. This league's history includes years: ${Object.keys(
-            leagueHistoryMap
-          )
-            .sort()
-            .join(", ")}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  const resultsByYear: T[] = [];
-
-  for (const currYear of yearsToProcess) {
-    const leagueId = leagueHistoryMap[currYear].leagueId;
-
-    const result = await processor(
-      userId,
-      leagueId,
-      currYear,
-      ...processorArgs
-    );
-
-    resultsByYear.push(result);
-  }
-
-  let output = resultsByYear.join("\n\n");
-
-  // Add missing years note
-  if (yearsToProcess.length < requestedYears.length) {
-    const missingYears = requestedYears.filter(
-      (y) => !yearsToProcess.includes(y)
-    );
-    output += `\n\nNote: No data found for year(s): ${missingYears.join(", ")}`;
-  }
-
-  // Add title if provided
-  if (title) {
-    output = `${title}:\n\n${output}`;
-  }
-
-  return {
-    content: [{ type: "text", text: output }],
-  };
-}
 
 mcpServer.tool(
   "get-current-nfl-week",
@@ -193,7 +89,9 @@ mcpServer.tool(
 mcpServer.tool(
   "get-trending-players",
   "Gets the current top 5 trending players based on waiver adds, drops, or both",
-  trendingShape,
+  {
+    trendingType: FIELDS.trendingType,
+  },
   async ({ trendingType }) => {
     const trendingPlayers = await fetchTrendingPlayers(trendingType);
 
@@ -272,7 +170,11 @@ mcpServer.tool(
 mcpServer.tool(
   "get-user-roster-trending-players",
   "Gets the players on the user's roster that are currently trending",
-  userLeagueTrendShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    trendingType: FIELDS.trendingType,
+  },
   async ({ username, leagueName, trendingType }) => {
     const myTrendingPlayers = await fetchMyTrendingRosterPlayers(
       username,
@@ -350,7 +252,9 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-names-for-user",
   "Retrieves all fantasy football league names associated with a Sleeper username. Use this tool to verify league names mentioned by users. When a user references a league name that doesn't exactly match any returned names, select the closest match from this list or inform the user about valid league names. This tool should be called before any league-specific operations to ensure the correct league is targeted.",
-  userOnlyShape,
+  {
+    username: FIELDS.username,
+  },
   async ({ username }) => {
     const mostRecentLeagues = await fetchLeagues(username);
 
@@ -381,7 +285,11 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-settings",
   "Gets the general settings, wavier settings, and taxi settings (if dynasty league) for a given league",
-  userLeagueRequiredYearShape,
+  {
+    username: FIELDS.username,
+    year: FIELDS.requiredYear,
+    leagueName: FIELDS.leagueName,
+  },
   async ({ username, year, leagueName }) => {
     return await processLeagueDataByYear(
       username,
@@ -396,7 +304,11 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-playoff-schedule",
   "Retrieves a league's playoff structure and schedule, mapping playoff rounds (like quarterfinals, semifinals, finals) to their corresponding week numbers. Use this tool to determine which NFL week corresponds to specific playoff rounds based on the league's settings.",
-  userLeagueRequiredYearShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, year }) => {
     return await processLeagueDataByYear(
       username,
@@ -411,7 +323,12 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-scoring-settings",
   "Gets the detailed scoring settings for a league",
-  { ...userLeagueRequiredYearShape, category: FIELDS.scoreCategory },
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    year: FIELDS.requiredYear,
+    category: FIELDS.scoreCategory,
+  },
   async ({ username, leagueName, year, category }) => {
     const categoryDisplay =
       category.charAt(0).toUpperCase() + category.slice(1);
@@ -430,7 +347,11 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-roster-settings",
   "Retrieves the roster details for the league (i.e. How many starting roster slots and the type of those roster slots.).",
-  userLeagueRequiredYearShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, year }) => {
     return await processLeagueDataByYear(
       username,
@@ -445,7 +366,12 @@ mcpServer.tool(
 mcpServer.tool(
   "get-matchup-details",
   "Gets the matchup for the user given the league name, username, week, and season year",
-  userLeagueRequiredYearWeekShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    week: FIELDS.week,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, week, year }) => {
     const userId = await fetchUserId(username);
 
@@ -476,7 +402,12 @@ mcpServer.tool(
 mcpServer.tool(
   "get-matchup-starters",
   "Gets detailed information about the starting players for a matchup",
-  userLeagueRequiredYearWeekShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    week: FIELDS.week,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, week, year }) => {
     const userId = await fetchUserId(username);
 
@@ -507,7 +438,11 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-playoff-history",
   "Gets the complete playoff history for the league, including all placements. Please request the user's sleeper username before calling this.",
-  userLeagueYearShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    year: FIELDS.year,
+  },
   async ({ username, leagueName, year }) => {
     return await processLeagueDataByYear(
       username,
@@ -522,7 +457,12 @@ mcpServer.tool(
 mcpServer.tool(
   "get-matchup-bench",
   "Gets detailed information about bench players for a matchup, showing which players were benched and how many points they scored",
-  userLeagueRequiredYearWeekShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    week: FIELDS.week,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, week, year }) => {
     const userId = await fetchUserId(username);
 
@@ -553,7 +493,12 @@ mcpServer.tool(
 mcpServer.tool(
   "get-bench-starter-analysis",
   "Analyzes lineup decisions for a matchup, showing whether optimal choices were made and if bench players outperformed starters. Identifies missed opportunities and potential points left on the bench.",
-  userLeagueRequiredYearWeekShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    week: FIELDS.week,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, week, year }) => {
     const userId = await fetchUserId(username);
 
@@ -584,7 +529,12 @@ mcpServer.tool(
 mcpServer.tool(
   "get-season-head-to-head",
   "Gets the complete head-to-head record between two users for an entire season, including win/loss record, total points, and game-by-game results",
-  userLeagueYearOpponentShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    year: FIELDS.year,
+    opponentUsername: FIELDS.opponentUsername,
+  },
   async ({ username, leagueName, year, opponentUsername }) => {
     // Validate both usernames exist
     const userId = await fetchUserId(username);
@@ -629,7 +579,11 @@ mcpServer.tool(
 mcpServer.tool(
   "get-league-playoff-bracket",
   "Gets the current playoff bracket showing matchups, winners, and bracket progression for a league",
-  userLeagueRequiredYearShape,
+  {
+    username: FIELDS.username,
+    leagueName: FIELDS.leagueName,
+    year: FIELDS.requiredYear,
+  },
   async ({ username, leagueName, year }) => {
     return await processLeagueDataByYear(
       username,

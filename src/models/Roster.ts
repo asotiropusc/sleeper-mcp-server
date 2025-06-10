@@ -26,13 +26,11 @@ export interface Roster {
   owner_id: string;
   league_id: string;
 
-  // Players and lineup
   players: string[];
   starters: string[];
   reserve: string[] | null;
   taxi: string[] | null;
 
-  // Settings and metadata
   settings: RosterSettings;
   metadata: RosterMetadata;
 

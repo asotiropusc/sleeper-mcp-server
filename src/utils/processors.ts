@@ -1,7 +1,9 @@
+import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { LeagueScoringSettings } from "../models/League.js";
 import {
   fetchBenchVsStarterAnalysis,
   fetchLeagueData,
+  fetchLeagueHistoryMap,
   fetchLeaguePlayoffBracket,
   fetchLeaguePlayoffHistory,
   fetchLeaguePlayoffSchedule,
@@ -10,6 +12,7 @@ import {
   fetchMatchupStarters,
   fetchMatchupSummary,
   fetchSeasonMatchupsBetweenUsers,
+  fetchUserId,
 } from "./api.js";
 import {
   formatDefensiveScoring,
@@ -22,9 +25,10 @@ import {
   getRoundName,
   getWaiverType,
   getWaiverTypeDescription,
+  parseYearParameter,
 } from "./helpers.js";
 
-export interface Processor<T> {
+interface Processor<T> {
   (
     userId: string,
     leagueId: string,
@@ -35,6 +39,98 @@ export interface Processor<T> {
 
 interface Counter {
   [key: string]: number;
+}
+
+export async function processLeagueDataByYear<T>(
+  username: string,
+  leagueName: string,
+  year: string | undefined,
+  processor: Processor<T>,
+  title: string,
+  ...processorArgs: any[]
+): Promise<CallToolResult> {
+  const userId = await fetchUserId(username);
+  if (!userId) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Invalid username: ${username}. Prompt user for their username again emphasize that case sensitivity matters.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const leagueHistoryMap = await fetchLeagueHistoryMap(username, leagueName);
+
+  if (!leagueHistoryMap) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Could not find the data for league: ${leagueName} and username: ${username}. Ensure username and league name are valid`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const availableYears = Object.keys(leagueHistoryMap);
+  const { requestedYears, yearsToProcess } = parseYearParameter(
+    year,
+    availableYears
+  );
+
+  if (yearsToProcess.length === 0) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `No league data found for the specified year(s): ${year}. This league's history includes years: ${Object.keys(
+            leagueHistoryMap
+          )
+            .sort()
+            .join(", ")}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const resultsByYear: T[] = [];
+
+  for (const currYear of yearsToProcess) {
+    const leagueId = leagueHistoryMap[currYear].leagueId;
+
+    const result = await processor(
+      userId,
+      leagueId,
+      currYear,
+      ...processorArgs
+    );
+
+    resultsByYear.push(result);
+  }
+
+  let output = resultsByYear.join("\n\n");
+
+  // Add missing years note
+  if (yearsToProcess.length < requestedYears.length) {
+    const missingYears = requestedYears.filter(
+      (y) => !yearsToProcess.includes(y)
+    );
+    output += `\n\nNote: No data found for year(s): ${missingYears.join(", ")}`;
+  }
+
+  // Add title if provided
+  if (title) {
+    output = `${title}:\n\n${output}`;
+  }
+
+  return {
+    content: [{ type: "text", text: output }],
+  };
 }
 
 export const processLeagueSettings: Processor<string> = async (
@@ -321,7 +417,7 @@ export const processMatchupStarters: Processor<string> = async (
   }
 
   // Format user starters
-  const userStarters = userTeam.starters
+  const userStarters = userTeam.players
     .map((starter) => {
       return `    ${starter.position}: ${
         starter.name
@@ -329,7 +425,7 @@ export const processMatchupStarters: Processor<string> = async (
     })
     .join("\n");
 
-  const opponentStarters = opponentTeam.starters
+  const opponentStarters = opponentTeam.players
     .map((starter) => {
       return `    ${starter.position}: ${
         starter.name
@@ -342,11 +438,11 @@ export const processMatchupStarters: Processor<string> = async (
     `Year ${currYear}, Week ${week} (${matchupStatus}):`,
     `  ${userTeam.name}'s Starters:`,
     userStarters,
-    `  Total: ${userTeam.totalStarterPoints?.toFixed(2)} points`,
+    `  Total: ${userTeam.totalPoints.toFixed(2)} points`,
     "",
     `  ${opponentTeam.name}'s Starters:`,
     opponentStarters,
-    `  Total: ${opponentTeam.totalStarterPoints?.toFixed(2)} points`,
+    `  Total: ${opponentTeam.totalPoints.toFixed(2)} points`,
   ].join("\n");
 
   return output;
@@ -372,7 +468,7 @@ export const processMatchupBench: Processor<string> = async (
   }
 
   // Format user bench players
-  const userBenchPlayers = userTeam.benchPlayers
+  const userBenchPlayers = userTeam.players
     .map((player, index) => {
       return `    Player ${index + 1}: ${player.name} - ${player.points.toFixed(
         2
@@ -381,7 +477,7 @@ export const processMatchupBench: Processor<string> = async (
     .join("\n");
 
   // Format opponent bench players
-  const opponentBenchPlayers = opponentTeam.benchPlayers
+  const opponentBenchPlayers = opponentTeam.players
     .map((player, index) => {
       return `    Player ${index + 1}: ${player.name} - ${player.points.toFixed(
         2
@@ -394,13 +490,13 @@ export const processMatchupBench: Processor<string> = async (
     `Year ${currYear}, Week ${week} (${matchupStatus}):`,
     `  ${userTeam.name}'s Bench:`,
     userBenchPlayers.length > 0 ? userBenchPlayers : "    No bench players",
-    `  Total Bench Points: ${userTeam.totalBenchPoints.toFixed(2)}`,
+    `  Total Bench Points: ${userTeam.totalPoints.toFixed(2)}`,
     "",
     `  ${opponentTeam.name}'s Bench:`,
     opponentBenchPlayers.length > 0
       ? opponentBenchPlayers
       : "    No bench players",
-    `  Total Bench Points: ${opponentTeam.totalBenchPoints.toFixed(2)}`,
+    `  Total Bench Points: ${opponentTeam.totalPoints.toFixed(2)}`,
   ].join("\n");
 
   return output;

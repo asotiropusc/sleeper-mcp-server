@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const DESCRIPTIONS = {
+const DESCRIPTIONS = {
   username: "Sleeper username. Must be provided by the user.",
   leagueName:
     "Name of the league. Must be provided by user unless user specifies something like 'all my leagues' in which case can use the get-league-names-for-user tool",
@@ -39,56 +39,4 @@ export const FIELDS = {
     .enum(["add", "drop", "all"])
     .default("all")
     .describe(DESCRIPTIONS.trendingType),
-};
-
-// Different combinations for different needs
-export const userLeagueYearShape = {
-  username: FIELDS.username,
-  leagueName: FIELDS.leagueName,
-  year: FIELDS.year,
-};
-
-export const userLeagueRequiredYearShape = {
-  username: FIELDS.username,
-  leagueName: FIELDS.leagueName,
-  year: FIELDS.requiredYear,
-};
-
-// TODO: dont make year required bc we need to be able to perform historical fetching across all league years (MAYBE?)
-export const userLeagueRequiredYearWeekShape = {
-  ...userLeagueRequiredYearShape,
-  week: FIELDS.week,
-};
-
-export const userLeagueYearOpponentShape = {
-  ...userLeagueYearShape,
-  opponentUsername: FIELDS.opponentUsername,
-};
-
-export const userRequiredYearShape = {
-  username: FIELDS.username,
-  year: FIELDS.requiredYear,
-};
-
-export const userYearShape = {
-  username: FIELDS.username,
-  year: FIELDS.year,
-};
-
-export const userLeagueShape = {
-  username: FIELDS.username,
-  leagueName: FIELDS.leagueName,
-};
-
-export const userOnlyShape = {
-  username: FIELDS.username,
-};
-
-export const trendingShape = {
-  trendingType: FIELDS.trendingType,
-};
-
-export const userLeagueTrendShape = {
-  ...userLeagueShape,
-  ...trendingShape,
 };

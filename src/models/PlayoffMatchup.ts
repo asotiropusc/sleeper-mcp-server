@@ -63,3 +63,9 @@ export interface PlayoffMatchup {
    */
   p?: number;
 }
+
+export enum PlayoffRoundType {
+  ONE_WEEK_PER_ROUND,
+  TWO_WEEK_CHAMPIONSHIP,
+  TWO_WEEKS_PER_ROUND,
+}
